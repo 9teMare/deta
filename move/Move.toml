@@ -1,0 +1,13 @@
+[package]
+name = "datax"
+version = "0.0.1"
+authors = []
+
+[addresses]
+aptos_data_network = "0x0b133cba97a77b2dee290919e27c72c7d49d8bf5a3294efbd8c40cc38a009eab"
+datax = "0x0b133cba97a77b2dee290919e27c72c7d49d8bf5a3294efbd8c40cc38a009eab"
+
+[dependencies.AptosFramework]
+git = "https://github.com/aptos-labs/aptos-framework.git"
+rev = "testnet"
+subdir = "aptos-framework"

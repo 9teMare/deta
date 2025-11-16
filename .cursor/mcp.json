@@ -1,0 +1,11 @@
+{
+    "mcpServers": {
+      "aptos-mcp": {
+        "command": "npx",
+        "args": ["-y", "@aptos-labs/aptos-mcp"],
+        "env": {
+          "APTOS_BOT_KEY": "aptoslabs_tWRhinX757_DtAjWgs2Y1RcgpyBMWkHRk3YxN4JureLU"
+        }
+      }
+    }
+  }
