@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/joho/godotenv"
 )
@@ -11,6 +12,7 @@ type Config struct {
 	Port              string
 	AptosNodeURL      string
 	AptosIndexerURL   string // Aptos Indexer API URL
+	UseIndexer        bool   // Toggle to enable/disable indexer usage
 	DataXModuleAddr   string
 	NetworkModuleAddr string
 	ChainID           uint8
@@ -33,6 +35,7 @@ func LoadConfig() error {
 		Port:              getEnv("PORT", "8080"),
 		AptosNodeURL:      getEnv("APTOS_NODE_URL", "https://fullnode.testnet.aptoslabs.com"),
 		AptosIndexerURL:   getEnv("APTOS_INDEXER_URL", "https://api.testnet.aptoslabs.com/v1/graphql"),
+		UseIndexer:        getEnvAsBool("USE_INDEXER", "true"), // Enable indexer by default
 		DataXModuleAddr:   getEnv("DATAX_MODULE_ADDR", "0x0b133cba97a77b2dee290919e27c72c7d49d8bf5a3294efbd8c40cc38a009eab"),
 		NetworkModuleAddr: getEnv("NETWORK_MODULE_ADDR", "0x0b133cba97a77b2dee290919e27c72c7d49d8bf5a3294efbd8c40cc38a009eab"),
 		ChainID:           uint8(getEnvAsInt("CHAIN_ID", "2")), // 2 for testnet
@@ -66,4 +69,17 @@ func getEnvAsInt(key string, defaultValue string) int {
 		return 2 // default to testnet
 	}
 	return result
+}
+
+func getEnvAsBool(key string, defaultValue string) bool {
+	value := os.Getenv(key)
+	if value == "" {
+		value = defaultValue
+	}
+	// Convert string to bool (accepts: true, false, 1, 0, yes, no)
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "true" || value == "1" || value == "yes" {
+		return true
+	}
+	return false
 }

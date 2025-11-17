@@ -56,6 +56,7 @@ func main() {
 
 		// Vault operations
 		api.POST("/vault/get", handler.GetUserVault)
+		api.POST("/vault/metadata", handler.GetUserDatasetsMetadata)
 
 		// Token operations
 		api.POST("/token/register", handler.RegisterToken)

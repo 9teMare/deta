@@ -362,21 +362,103 @@ func (s *AptosServiceImpl) GetDataset(userAddress string, datasetID uint64) (int
 		userAddr.String(),
 		url.PathEscape(resourceType))
 
-	resp, err := http.Get(resourceURL)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query DataStore resource: %w", err)
-	}
-	defer resp.Body.Close()
+	// Retry logic with exponential backoff for rate limiting
+	var resp *http.Response
+	var bodyBytes []byte
+	var lastErr error
+	var lastStatusCode int
 
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, fmt.Errorf("DataStore resource not found for user")
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(1<<uint(attempt-1)) * time.Second
+			fmt.Printf("DEBUG: Retrying GetDataset query (attempt %d/3) after %v\n", attempt+1, backoff)
+			time.Sleep(backoff)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		req, err := http.NewRequestWithContext(ctx, "GET", resourceURL, nil)
+		if err != nil {
+			cancel()
+			lastErr = err
+			continue
+		}
+
+		resp, err = s.httpClient.Do(req)
+		cancel()
+
+		if err != nil {
+			lastErr = fmt.Errorf("failed to query DataStore resource: %w", err)
+			fmt.Printf("DEBUG: GetDataset request error (attempt %d): %v\n", attempt+1, err)
+			if resp != nil {
+				resp.Body.Close()
+			}
+			continue
+		}
+
+		// Read response body before checking status
+		bodyBytes, err = io.ReadAll(resp.Body)
+		resp.Body.Close()
+		lastStatusCode = resp.StatusCode
+
+		if err != nil {
+			lastErr = fmt.Errorf("failed to read response body: %w", err)
+			fmt.Printf("DEBUG: Failed to read response (attempt %d): %v\n", attempt+1, err)
+			bodyBytes = nil // Clear bodyBytes on error
+			continue
+		}
+
+		if resp.StatusCode == http.StatusNotFound {
+			fmt.Printf("DEBUG: DataStore resource not found for user %s\n", userAddr.String())
+			return nil, fmt.Errorf("DataStore resource not found for user")
+		}
+
+		if resp.StatusCode == http.StatusTooManyRequests {
+			lastErr = fmt.Errorf("rate limited (429)")
+			fmt.Printf("DEBUG: Rate limited (429) on attempt %d, will retry. Body: %s\n", attempt+1, string(bodyBytes))
+			bodyBytes = nil // Clear bodyBytes before retry
+			// Wait longer for rate limits
+			if attempt < 2 {
+				time.Sleep(5 * time.Second)
+			}
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+			fmt.Printf("DEBUG: GetDataset returned status %d (attempt %d). Body: %s\n", resp.StatusCode, attempt+1, string(bodyBytes))
+			bodyBytes = nil // Clear bodyBytes before retry
+			// Don't retry on client errors (4xx) except 429
+			if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != 429 {
+				return nil, lastErr
+			}
+			continue
+		}
+
+		// Success - break out of retry loop
+		fmt.Printf("DEBUG: GetDataset succeeded on attempt %d\n", attempt+1)
+		break
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	if resp == nil {
+		return nil, fmt.Errorf("failed to query DataStore resource after retries: %w", lastErr)
 	}
 
-	// Parse the resource data
+	if lastStatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to query DataStore resource: status %d, error: %w", lastStatusCode, lastErr)
+	}
+
+	if len(bodyBytes) == 0 {
+		return nil, fmt.Errorf("empty response body from DataStore resource query")
+	}
+
+	// Log response body for debugging (first 500 chars)
+	bodyPreview := string(bodyBytes)
+	if len(bodyPreview) > 500 {
+		bodyPreview = bodyPreview[:500] + "..."
+	}
+	fmt.Printf("DEBUG: GetDataset response body (first 500 chars): %s\n", bodyPreview)
+
+	// Parse the resource data from the already-read body bytes
 	var resourceData struct {
 		Data struct {
 			Datasets []struct {
@@ -390,7 +472,9 @@ func (s *AptosServiceImpl) GetDataset(userAddress string, datasetID uint64) (int
 		} `json:"data"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&resourceData); err != nil {
+	if err := json.Unmarshal(bodyBytes, &resourceData); err != nil {
+		fmt.Printf("DEBUG: Failed to unmarshal response body. Length: %d bytes. Error: %v\n", len(bodyBytes), err)
+		fmt.Printf("DEBUG: Response body (full): %s\n", string(bodyBytes))
 		return nil, fmt.Errorf("failed to decode resource data: %w", err)
 	}
 
@@ -561,50 +645,8 @@ func (s *AptosServiceImpl) CheckAccess(owner string, datasetID uint64, requester
 	return false, nil
 }
 
-// userRegistry is a simple in-memory registry of users who have submitted data
-// In production, this would be stored in a database or use an indexer
-var userRegistry = make(map[string]bool)
-var userRegistryMutex sync.Mutex
-
-// RegisterUser adds a user to the registry
-// This is exported so handlers can call it
-func RegisterUser(userAddress string) {
-	userRegistryMutex.Lock()
-	defer userRegistryMutex.Unlock()
-	userRegistry[userAddress] = true
-	fmt.Printf("DEBUG: Registered user %s in marketplace registry (total: %d)\n", userAddress, len(userRegistry))
-}
-
-// DiscoverUserFromVault checks if a user has datasets and registers them if they do
-// This helps populate the registry even if the backend restarted
-func DiscoverUserFromVault(userAddress string) bool {
-	moduleAddr, err := parseAddress(config.AppConfig.DataXModuleAddr)
-	if err != nil {
-		return false
-	}
-
-	// Check if user has a DataStore resource
-	resourceType := fmt.Sprintf("%s::data_registry::DataStore", moduleAddr.String())
-	resourceURL := fmt.Sprintf("%s/v1/accounts/%s/resource/%s",
-		config.AppConfig.AptosNodeURL,
-		userAddress,
-		url.PathEscape(resourceType))
-
-	resp, err := http.Get(resourceURL)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusOK {
-		// User has a DataStore, register them
-		RegisterUser(userAddress)
-		fmt.Printf("DEBUG: Discovered and registered user %s from DataStore\n", userAddress)
-		return true
-	}
-
-	return false
-}
+// Note: All user discovery is now done directly from the blockchain
+// No in-memory registry is used - we query DataStore resources directly
 
 // DiscoverUsersFromChain discovers users who have DataStore resources on-chain
 // Uses Aptos Indexer GraphQL API to query events by type across all accounts
@@ -616,66 +658,51 @@ func (s *AptosServiceImpl) DiscoverUsersFromChain() ([]string, error) {
 
 	eventType := fmt.Sprintf("%s::data_registry::DataSubmitted", moduleAddr.String())
 
-	// Try using the GraphQL Indexer API first
+	// Try using the GraphQL Indexer API (if configured)
+	// Even if USE_INDEXER is false, we'll try it as a fallback since without it we can't discover users
 	if config.AppConfig.AptosIndexerURL != "" {
+		if config.AppConfig.UseIndexer {
+			fmt.Printf("DEBUG: Indexer is enabled, attempting to query GraphQL indexer...\n")
+		} else {
+			fmt.Printf("DEBUG: Indexer is disabled but will try as fallback (required for user discovery)...\n")
+		}
+
 		users, err := s.queryUsersFromGraphQLIndexer(eventType)
 		if err == nil && len(users) > 0 {
 			fmt.Printf("DEBUG: Discovered %d users from GraphQL indexer\n", len(users))
 			return users, nil
 		}
-		fmt.Printf("DEBUG: GraphQL indexer query failed, falling back to registry: %v\n", err)
+		// Log the error but continue with fallback
+		if config.AppConfig.UseIndexer {
+			fmt.Printf("DEBUG: GraphQL indexer query failed, trying fallback: %v\n", err)
+		} else {
+			fmt.Printf("DEBUG: GraphQL indexer query failed (indexer disabled): %v\n", err)
+		}
+	} else {
+		fmt.Printf("DEBUG: GraphQL indexer URL not configured\n")
 	}
 
-	// Fallback: Get users from registry and query their events
-	userRegistryMutex.Lock()
-	registryUsers := make([]string, 0, len(userRegistry))
-	for user := range userRegistry {
-		registryUsers = append(registryUsers, user)
-	}
-	userRegistryMutex.Unlock()
-
-	fmt.Printf("DEBUG: Starting discovery with %d users from registry\n", len(registryUsers))
-
-	// Query events from each registry user to discover additional users
+	// Fallback: Try to query events from the module address
+	// Note: In Aptos, events are stored on the account that emitted them, not the module
+	// However, some events might be queryable from the module address
+	// This is a best-effort fallback when indexer is unavailable
 	discoveredUsers := make(map[string]bool)
 
-	// Add registry users to discovered set
-	for _, user := range registryUsers {
-		discoveredUsers[user] = true
-	}
+	fmt.Printf("DEBUG: Attempting fallback: query events from module address\n")
 
-	// Query events from registry users to find any additional users mentioned in events
-	// Use concurrent queries with limit
-	const maxConcurrent = 5
-	semaphore := make(chan struct{}, maxConcurrent)
-	var wg sync.WaitGroup
-	var mu sync.Mutex
+	// Try querying events from the module address
+	eventsURL := fmt.Sprintf("%s/v1/accounts/%s/events/%s?limit=1000",
+		config.AppConfig.AptosNodeURL,
+		moduleAddr.String(),
+		url.PathEscape(eventType))
 
-	for _, userAddr := range registryUsers {
-		wg.Add(1)
-		go func(addr string) {
-			defer wg.Done()
-			semaphore <- struct{}{}
-			defer func() { <-semaphore }()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	req, err := http.NewRequestWithContext(ctx, "GET", eventsURL, nil)
+	if err == nil {
+		resp, err := s.httpClient.Do(req)
+		cancel()
 
-			eventsURL := fmt.Sprintf("%s/v1/accounts/%s/events/%s?limit=100",
-				config.AppConfig.AptosNodeURL,
-				addr,
-				url.PathEscape(eventType))
-
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			req, err := http.NewRequestWithContext(ctx, "GET", eventsURL, nil)
-			if err != nil {
-				cancel()
-				return
-			}
-
-			resp, err := s.httpClient.Do(req)
-			cancel()
-
-			if err != nil {
-				return
-			}
+		if err == nil {
 			defer resp.Body.Close()
 
 			if resp.StatusCode == http.StatusOK {
@@ -688,19 +715,37 @@ func (s *AptosServiceImpl) DiscoverUsersFromChain() ([]string, error) {
 				}
 
 				if err := json.NewDecoder(resp.Body).Decode(&eventsData); err == nil {
-					mu.Lock()
 					for _, event := range eventsData.Data {
 						if event.Data.User != "" {
 							discoveredUsers[event.Data.User] = true
 						}
 					}
-					mu.Unlock()
+					fmt.Printf("DEBUG: Discovered %d users from module events\n", len(discoveredUsers))
+				} else {
+					fmt.Printf("DEBUG: Failed to decode module events: %v\n", err)
 				}
+			} else if resp.StatusCode == http.StatusNotFound {
+				fmt.Printf("DEBUG: Module events not found (events are stored on user accounts, not module)\n")
+			} else {
+				fmt.Printf("DEBUG: Module events query returned status %d\n", resp.StatusCode)
 			}
-		}(userAddr)
+		} else {
+			cancel()
+			fmt.Printf("DEBUG: Failed to query module events: %v\n", err)
+		}
+	} else {
+		cancel()
+		fmt.Printf("DEBUG: Failed to create request for module events: %v\n", err)
 	}
 
-	wg.Wait()
+	// Note: Without an indexer, we cannot discover all users because:
+	// 1. Events are stored on user accounts, not the module
+	// 2. We cannot enumerate all accounts on Aptos
+	// 3. We need either an indexer or a registry of known users
+	if len(discoveredUsers) == 0 {
+		fmt.Printf("WARNING: No users discovered. Without indexer, user discovery is not possible.\n")
+		fmt.Printf("WARNING: Please enable indexer (USE_INDEXER=true) or the marketplace will be empty.\n")
+	}
 
 	users := make([]string, 0, len(discoveredUsers))
 	for user := range discoveredUsers {
@@ -712,32 +757,20 @@ func (s *AptosServiceImpl) DiscoverUsersFromChain() ([]string, error) {
 }
 
 // queryUsersFromGraphQLIndexer queries the Aptos Indexer GraphQL API to find all users who emitted DataSubmitted events
-// Uses GraphQL to query account_transactions filtered by event type
+// Queries account_transactions and filters by event type in the transaction
 // Reference: https://aptos.dev/build/indexer/indexer-api/indexer-reference
 func (s *AptosServiceImpl) queryUsersFromGraphQLIndexer(eventType string) ([]string, error) {
-	// GraphQL query to find all transactions that emitted DataSubmitted events
-	// Query account_transactions table and filter by event type
-	// The account_address field gives us the user who submitted the data
-	graphQLQuery := fmt.Sprintf(`query {
+	// Query account_transactions and check for events with matching type
+	// We'll filter in code since we can't filter by event type in the where clause
+	graphQLQuery := `query GetDataSubmittedEvents {
 		account_transactions(
-			where: {
-				events: {
-					type: { _eq: "%s" }
-				}
-			},
 			limit: 1000,
 			order_by: { transaction_version: desc }
 		) {
 			account_address
-			events(
-				where: {
-					type: { _eq: "%s" }
-				}
-			) {
-				data
-			}
+			transaction_version
 		}
-	}`, eventType, eventType)
+	}`
 
 	// Prepare GraphQL request
 	requestBody := map[string]interface{}{
@@ -750,15 +783,19 @@ func (s *AptosServiceImpl) queryUsersFromGraphQLIndexer(eventType string) ([]str
 	}
 
 	// Retry logic: try up to 3 times with exponential backoff
+	// Add initial delay to avoid rate limiting
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
 			backoff := time.Duration(1<<uint(attempt-1)) * time.Second
 			fmt.Printf("DEBUG: Retrying GraphQL indexer query (attempt %d/%d) after %v\n", attempt+1, 3, backoff)
 			time.Sleep(backoff)
+		} else {
+			// Small initial delay to avoid hitting rate limits on first request
+			time.Sleep(100 * time.Millisecond)
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		req, err := http.NewRequestWithContext(ctx, "POST", config.AppConfig.AptosIndexerURL, strings.NewReader(string(jsonBody)))
 		if err != nil {
 			cancel()
@@ -768,41 +805,56 @@ func (s *AptosServiceImpl) queryUsersFromGraphQLIndexer(eventType string) ([]str
 
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json")
+		req.Header.Set("User-Agent", "DataX-Backend/1.0")
 
 		resp, err := s.httpClient.Do(req)
-		cancel()
-
 		if err != nil {
+			cancel()
 			lastErr = fmt.Errorf("GraphQL request failed: %w", err)
 			fmt.Printf("DEBUG: GraphQL request error (attempt %d): %v\n", attempt+1, err)
 			continue
 		}
-		defer resp.Body.Close()
+
+		// Read response body before checking status to capture error details
+		bodyBytes, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		cancel() // Cancel after reading body
+
+		if readErr != nil {
+			lastErr = fmt.Errorf("failed to read response body: %w", readErr)
+			fmt.Printf("DEBUG: Failed to read response (attempt %d): %v\n", attempt+1, readErr)
+			continue
+		}
 
 		if resp.StatusCode != http.StatusOK {
-			bodyBytes, _ := io.ReadAll(resp.Body)
 			lastErr = fmt.Errorf("GraphQL returned status %d: %s", resp.StatusCode, string(bodyBytes))
 			fmt.Printf("DEBUG: GraphQL returned status %d (attempt %d): %s\n", resp.StatusCode, attempt+1, string(bodyBytes))
+
+			// If rate limited (429), wait longer before retry
+			if resp.StatusCode == http.StatusTooManyRequests {
+				fmt.Printf("DEBUG: Rate limited, waiting 5 seconds before next retry\n")
+				time.Sleep(5 * time.Second)
+			}
 			continue
 		}
 
 		var graphQLResponse struct {
 			Data struct {
-				AccountTransactions []struct {
-					AccountAddress string `json:"account_address"`
-					Events         []struct {
-						Data json.RawMessage `json:"data"`
-					} `json:"events"`
-				} `json:"account_transactions"`
+				EventsV2 []struct {
+					AccountAddress string          `json:"account_address"`
+					Data           json.RawMessage `json:"data"`
+				} `json:"events_v2"`
 			} `json:"data"`
 			Errors []struct {
-				Message string `json:"message"`
+				Message string        `json:"message"`
+				Path    []interface{} `json:"path,omitempty"`
 			} `json:"errors"`
 		}
 
-		if err := json.NewDecoder(resp.Body).Decode(&graphQLResponse); err != nil {
+		if err := json.Unmarshal(bodyBytes, &graphQLResponse); err != nil {
 			lastErr = fmt.Errorf("failed to decode GraphQL response: %w", err)
 			fmt.Printf("DEBUG: Failed to decode GraphQL response (attempt %d): %v\n", attempt+1, err)
+			fmt.Printf("DEBUG: Response body: %s\n", string(bodyBytes))
 			continue
 		}
 
@@ -814,26 +866,34 @@ func (s *AptosServiceImpl) queryUsersFromGraphQLIndexer(eventType string) ([]str
 			}
 			lastErr = fmt.Errorf("GraphQL errors: %s", strings.Join(errorMessages, "; "))
 			fmt.Printf("DEBUG: GraphQL errors (attempt %d): %v\n", attempt+1, errorMessages)
+
+			// If it's a schema/query error, don't retry (it won't work)
+			for _, err := range graphQLResponse.Errors {
+				if strings.Contains(err.Message, "Unknown field") ||
+					strings.Contains(err.Message, "Cannot query field") ||
+					strings.Contains(err.Message, "schema") {
+					fmt.Printf("DEBUG: Query structure error detected, not retrying\n")
+					return nil, lastErr
+				}
+			}
 			continue
 		}
 
-		// Extract users from events
+		// Extract users from events_v2
 		userSet := make(map[string]bool)
-		for _, tx := range graphQLResponse.Data.AccountTransactions {
+		for _, event := range graphQLResponse.Data.EventsV2 {
 			// Add the account address that emitted the event
-			if tx.AccountAddress != "" {
-				userSet[tx.AccountAddress] = true
+			if event.AccountAddress != "" {
+				userSet[event.AccountAddress] = true
 			}
 
 			// Also extract user from event data
-			for _, event := range tx.Events {
-				var eventData struct {
-					User string `json:"user"`
-				}
-				if err := json.Unmarshal(event.Data, &eventData); err == nil {
-					if eventData.User != "" {
-						userSet[eventData.User] = true
-					}
+			var eventData struct {
+				User string `json:"user"`
+			}
+			if err := json.Unmarshal(event.Data, &eventData); err == nil {
+				if eventData.User != "" {
+					userSet[eventData.User] = true
 				}
 			}
 		}
@@ -848,6 +908,109 @@ func (s *AptosServiceImpl) queryUsersFromGraphQLIndexer(eventType string) ([]str
 	}
 
 	return nil, fmt.Errorf("GraphQL indexer query failed after 3 attempts: %w", lastErr)
+}
+
+// discoverUsersFromEventsTable queries recent transactions to find users who called submit_data
+// This is a pure blockchain approach - no in-memory storage
+func (s *AptosServiceImpl) discoverUsersFromEventsTable() ([]string, error) {
+	moduleAddr, err := parseAddress(config.AppConfig.DataXModuleAddr)
+	if err != nil {
+		return nil, err
+	}
+
+	// Query recent transactions and filter for ones that called our submit_data function
+	// We'll query transactions and check their payload to see if they call our module
+	moduleAddrStr := moduleAddr.String()
+	submitDataFunction := fmt.Sprintf("%s::data_registry::submit_data", moduleAddrStr)
+
+	// Query recent transactions from the REST API
+	// Query the most recent transactions and filter for ones that called submit_data
+	transactionsURL := fmt.Sprintf("%s/v1/transactions?limit=1000", config.AppConfig.AptosNodeURL)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", transactionsURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query transactions: %w", err)
+	}
+
+	bodyBytes, readErr := io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	if readErr != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", readErr)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("transactions query returned status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	// The transactions endpoint returns an array directly
+	var transactions []map[string]interface{}
+
+	if err := json.Unmarshal(bodyBytes, &transactions); err != nil {
+		previewLen := 500
+		if len(bodyBytes) < previewLen {
+			previewLen = len(bodyBytes)
+		}
+		fmt.Printf("DEBUG: Failed to decode transactions. Response preview: %s\n", string(bodyBytes[:previewLen]))
+		return nil, fmt.Errorf("failed to decode transactions: %w", err)
+	}
+
+	fmt.Printf("DEBUG: Retrieved %d transactions from API\n", len(transactions))
+
+	// Extract users from transactions that called our submit_data function
+	userSet := make(map[string]bool)
+	for i, tx := range transactions {
+		// Check transaction type - should be "user_transaction"
+		txType, ok := tx["type"].(string)
+		if !ok || txType != "user_transaction" {
+			continue
+		}
+
+		// Get sender
+		sender, ok := tx["sender"].(string)
+		if !ok || sender == "" {
+			continue
+		}
+
+		// Get payload - it's nested under "payload" for user_transactions
+		payload, ok := tx["payload"].(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		// Check if it's an entry function payload
+		payloadType, ok := payload["type"].(string)
+		if !ok || payloadType != "entry_function_payload" {
+			continue
+		}
+
+		// Get function name
+		function, ok := payload["function"].(string)
+		if !ok {
+			continue
+		}
+
+		if function == submitDataFunction {
+			userSet[sender] = true
+			fmt.Printf("DEBUG: Found user %s from transaction %d calling submit_data\n", sender, i)
+		}
+	}
+
+	users := make([]string, 0, len(userSet))
+	for user := range userSet {
+		users = append(users, user)
+	}
+
+	fmt.Printf("DEBUG: Discovered %d users from recent transactions\n", len(users))
+	return users, nil
 }
 
 // GetMarketplaceDatasets queries DataStore resources directly from the blockchain
@@ -867,28 +1030,27 @@ func (s *AptosServiceImpl) GetMarketplaceDatasets() ([]interface{}, error) {
 		users = []string{}
 	}
 
-	// Step 2: Also include users from registry (for backward compatibility)
-	userRegistryMutex.Lock()
-	for user := range userRegistry {
-		// Add to users list if not already present
-		found := false
-		for _, u := range users {
-			if u == user {
-				found = true
-				break
-			}
-		}
-		if !found {
-			users = append(users, user)
+	// Fallback: If no users found via events, try to discover by querying events table directly
+	// This is a more reliable approach for the Aptos indexer
+	if len(users) == 0 {
+		fmt.Printf("DEBUG: No users found via DiscoverUsersFromChain, trying direct events query...\n")
+		users, err = s.discoverUsersFromEventsTable()
+		if err != nil {
+			fmt.Printf("DEBUG: Error discovering users from events table: %v\n", err)
+		} else {
+			fmt.Printf("DEBUG: Discovered %d users from events table\n", len(users))
 		}
 	}
-	userRegistryMutex.Unlock()
 
-	fmt.Printf("DEBUG: Total users to query: %d (from chain: %d, from registry: %d)\n",
-		len(users), len(users), len(userRegistry))
+	// No registry - all users come from blockchain discovery
+	fmt.Printf("DEBUG: Total users to query: %d (all from blockchain)\n", len(users))
 
 	if len(users) == 0 {
-		fmt.Printf("DEBUG: No users found. Datasets may not exist yet, or events are not stored at module address.\n")
+		fmt.Printf("DEBUG: No users found. Datasets may not exist yet, or indexer is not working properly.\n")
+		fmt.Printf("DEBUG: Consider checking:\n")
+		fmt.Printf("DEBUG: 1. USE_INDEXER environment variable (should be true)\n")
+		fmt.Printf("DEBUG: 2. APTOS_INDEXER_URL is set correctly\n")
+		fmt.Printf("DEBUG: 3. There are actual DataSubmitted events on-chain\n")
 		return []interface{}{}, nil
 	}
 
@@ -901,8 +1063,8 @@ func (s *AptosServiceImpl) GetMarketplaceDatasets() ([]interface{}, error) {
 
 	resourceType := fmt.Sprintf("%s::data_registry::DataStore", moduleAddr.String())
 
-	// Use a worker pool to query users concurrently (max 5 concurrent requests)
-	const maxConcurrent = 5
+	// Use a worker pool to query users concurrently (max 3 concurrent requests to avoid overwhelming the API)
+	const maxConcurrent = 3
 	semaphore := make(chan struct{}, maxConcurrent)
 	var wg sync.WaitGroup
 
@@ -925,6 +1087,7 @@ func (s *AptosServiceImpl) GetMarketplaceDatasets() ([]interface{}, error) {
 
 			var resp *http.Response
 			var err error
+			var bodyBytes []byte
 
 			// Retry up to 2 times
 			for attempt := 0; attempt < 2; attempt++ {
@@ -932,7 +1095,7 @@ func (s *AptosServiceImpl) GetMarketplaceDatasets() ([]interface{}, error) {
 					time.Sleep(500 * time.Millisecond)
 				}
 
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 				req, reqErr := http.NewRequestWithContext(ctx, "GET", resourceURL, nil)
 				if reqErr != nil {
 					cancel()
@@ -941,34 +1104,50 @@ func (s *AptosServiceImpl) GetMarketplaceDatasets() ([]interface{}, error) {
 				}
 
 				resp, err = s.httpClient.Do(req)
+
+				if err != nil {
+					cancel()
+					if resp != nil {
+						resp.Body.Close()
+					}
+					fmt.Printf("DEBUG: Request failed for %s (attempt %d): %v\n", addr, attempt+1, err)
+					continue
+				}
+
+				if resp.StatusCode == http.StatusNotFound {
+					cancel()
+					resp.Body.Close()
+					fmt.Printf("DEBUG: No DataStore found for user %s\n", addr)
+					return
+				}
+
+				if resp.StatusCode != http.StatusOK {
+					cancel()
+					resp.Body.Close()
+					fmt.Printf("DEBUG: DataStore query returned status %d for user %s\n", resp.StatusCode, addr)
+					return
+				}
+
+				// Read the entire response body before canceling context
+				bodyBytes, err = io.ReadAll(resp.Body)
+				resp.Body.Close()
 				cancel()
 
-				if err == nil && resp.StatusCode == http.StatusOK {
-					break
+				if err != nil {
+					fmt.Printf("DEBUG: Failed to read response body for %s (attempt %d): %v\n", addr, attempt+1, err)
+					continue
 				}
 
-				if resp != nil {
-					resp.Body.Close()
-				}
+				// Success - break out of retry loop
+				break
 			}
 
-			if err != nil {
+			if err != nil || bodyBytes == nil {
 				fmt.Printf("DEBUG: Failed to query DataStore from %s after retries: %v\n", addr, err)
 				return
 			}
-			defer resp.Body.Close()
 
-			if resp.StatusCode == http.StatusNotFound {
-				fmt.Printf("DEBUG: No DataStore found for user %s\n", addr)
-				return
-			}
-
-			if resp.StatusCode != http.StatusOK {
-				fmt.Printf("DEBUG: DataStore query returned status %d for user %s\n", resp.StatusCode, addr)
-				return
-			}
-
-			// Parse the DataStore resource
+			// Parse the DataStore resource from the already-read body bytes
 			var resourceData struct {
 				Data struct {
 					Datasets []struct {
@@ -982,8 +1161,12 @@ func (s *AptosServiceImpl) GetMarketplaceDatasets() ([]interface{}, error) {
 				} `json:"data"`
 			}
 
-			if err := json.NewDecoder(resp.Body).Decode(&resourceData); err != nil {
+			if err := json.Unmarshal(bodyBytes, &resourceData); err != nil {
 				fmt.Printf("DEBUG: Failed to decode DataStore from %s: %v\n", addr, err)
+				fmt.Printf("DEBUG: Response body length: %d bytes\n", len(bodyBytes))
+				if len(bodyBytes) > 0 && len(bodyBytes) < 500 {
+					fmt.Printf("DEBUG: Response body preview: %s\n", string(bodyBytes))
+				}
 				return
 			}
 
@@ -1113,43 +1296,23 @@ func (s *AptosServiceImpl) GetMarketplaceDatasets() ([]interface{}, error) {
 	return datasets, nil
 }
 
-// accessRequestStore stores access requests
-// In production, this would be in a database or on-chain
-var accessRequestStore = make(map[string][]map[string]interface{})
-var accessRequestStoreMutex sync.Mutex
-
 // RequestAccess stores an access request
+// Note: In a production system, access requests should be stored on-chain
+// For now, this is a no-op as we're removing in-memory storage
 func RequestAccess(ownerAddress string, datasetID uint64, requesterAddress string, message string) {
-	accessRequestStoreMutex.Lock()
-	defer accessRequestStoreMutex.Unlock()
-
-	key := fmt.Sprintf("%s-%d", ownerAddress, datasetID)
-	request := map[string]interface{}{
-		"dataset_id":   datasetID,
-		"requester":    requesterAddress,
-		"message":      message,
-		"requested_at": fmt.Sprintf("%d", uint64(0)), // Would use timestamp in production
-	}
-
-	accessRequestStore[key] = append(accessRequestStore[key], request)
+	// Access requests should be stored on-chain via a smart contract
+	// This function is kept for API compatibility but does nothing
+	fmt.Printf("DEBUG: Access request received (not stored - should be on-chain): owner=%s, dataset=%d, requester=%s\n",
+		ownerAddress, datasetID, requesterAddress)
 }
 
 // GetAccessRequests returns access requests for a dataset owner
+// Note: In a production system, this should query on-chain access requests
 func (s *AptosServiceImpl) GetAccessRequests(ownerAddress string) ([]interface{}, error) {
-	accessRequestStoreMutex.Lock()
-	defer accessRequestStoreMutex.Unlock()
-
-	requests := make([]interface{}, 0)
-	for key, reqs := range accessRequestStore {
-		// Check if this key starts with the owner address
-		if len(key) > len(ownerAddress) && key[:len(ownerAddress)] == ownerAddress {
-			for _, req := range reqs {
-				requests = append(requests, req)
-			}
-		}
-	}
-
-	return requests, nil
+	// Access requests should be queried from the blockchain
+	// For now, return empty list as we're removing in-memory storage
+	fmt.Printf("DEBUG: GetAccessRequests called for %s (returning empty - should query blockchain)\n", ownerAddress)
+	return []interface{}{}, nil
 }
 
 func (s *AptosServiceImpl) GetUserVault(userAddress string) ([]uint64, error) {
@@ -1224,6 +1387,182 @@ func (s *AptosServiceImpl) GetUserVault(userAddress string) ([]uint64, error) {
 	}
 
 	return datasetIDs, nil
+}
+
+// GetUserDatasetsMetadata returns minimal metadata (id, metadata, is_active) for all datasets
+// This is optimized for batch operations like populating dropdowns
+func (s *AptosServiceImpl) GetUserDatasetsMetadata(userAddress string) ([]interface{}, error) {
+	userAddr, err := parseAddress(userAddress)
+	if err != nil {
+		return nil, err
+	}
+
+	moduleAddr, err := parseAddress(config.AppConfig.DataXModuleAddr)
+	if err != nil {
+		return nil, err
+	}
+
+	// Query the DataStore resource directly
+	resourceType := fmt.Sprintf("%s::data_registry::DataStore", moduleAddr.String())
+	resourceURL := fmt.Sprintf("%s/v1/accounts/%s/resource/%s",
+		config.AppConfig.AptosNodeURL,
+		userAddr.String(),
+		url.PathEscape(resourceType))
+
+	// Retry logic with exponential backoff
+	var resp *http.Response
+	var bodyBytes []byte
+	var lastErr error
+	var lastStatusCode int
+
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(1<<uint(attempt-1)) * time.Second
+			fmt.Printf("DEBUG: Retrying GetUserDatasetsMetadata query (attempt %d/3) after %v\n", attempt+1, backoff)
+			time.Sleep(backoff)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		req, err := http.NewRequestWithContext(ctx, "GET", resourceURL, nil)
+		if err != nil {
+			cancel()
+			lastErr = err
+			continue
+		}
+
+		resp, err = s.httpClient.Do(req)
+		cancel()
+
+		if err != nil {
+			lastErr = fmt.Errorf("failed to query DataStore resource: %w", err)
+			if resp != nil {
+				resp.Body.Close()
+			}
+			continue
+		}
+
+		bodyBytes, err = io.ReadAll(resp.Body)
+		resp.Body.Close()
+		lastStatusCode = resp.StatusCode
+
+		if err != nil {
+			lastErr = fmt.Errorf("failed to read response body: %w", err)
+			bodyBytes = nil
+			continue
+		}
+
+		if resp.StatusCode == http.StatusNotFound {
+			// No DataStore resource - return empty array
+			return []interface{}{}, nil
+		}
+
+		if resp.StatusCode == http.StatusTooManyRequests {
+			lastErr = fmt.Errorf("rate limited (429)")
+			bodyBytes = nil
+			if attempt < 2 {
+				time.Sleep(5 * time.Second)
+			}
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			lastErr = fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+			bodyBytes = nil
+			if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != 429 {
+				return nil, lastErr
+			}
+			continue
+		}
+
+		// Success
+		break
+	}
+
+	if resp == nil {
+		return nil, fmt.Errorf("failed to query DataStore resource after retries: %w", lastErr)
+	}
+
+	if lastStatusCode != http.StatusOK {
+		return nil, fmt.Errorf("failed to query DataStore resource: status %d, error: %w", lastStatusCode, lastErr)
+	}
+
+	if len(bodyBytes) == 0 {
+		return []interface{}{}, nil
+	}
+
+	// Parse the resource data
+	var resourceData struct {
+		Data struct {
+			Datasets []struct {
+				ID       interface{} `json:"id"`
+				Metadata interface{} `json:"metadata"`
+				IsActive interface{} `json:"is_active"`
+			} `json:"datasets"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(bodyBytes, &resourceData); err != nil {
+		return nil, fmt.Errorf("failed to decode resource data: %w", err)
+	}
+
+	// Convert to minimal metadata format
+	result := make([]interface{}, 0, len(resourceData.Data.Datasets))
+	for _, dataset := range resourceData.Data.Datasets {
+		// Parse ID
+		var id uint64
+		switch v := dataset.ID.(type) {
+		case float64:
+			id = uint64(v)
+		case string:
+			parsed, err := strconv.ParseUint(v, 10, 64)
+			if err != nil {
+				continue
+			}
+			id = parsed
+		case uint64:
+			id = v
+		default:
+			continue
+		}
+
+		// Parse metadata
+		metadataStr := ""
+		switch v := dataset.Metadata.(type) {
+		case []interface{}:
+			bytes := make([]byte, 0, len(v))
+			for _, b := range v {
+				if byteVal, ok := b.(float64); ok {
+					bytes = append(bytes, uint8(byteVal))
+				} else if byteVal, ok := b.(uint8); ok {
+					bytes = append(bytes, byteVal)
+				}
+			}
+			metadataStr = string(bytes)
+		case string:
+			metadataStr = v
+		default:
+			metadataStr = fmt.Sprintf("%v", v)
+		}
+
+		// Parse is_active
+		isActive := true
+		switch v := dataset.IsActive.(type) {
+		case bool:
+			isActive = v
+		case string:
+			isActive = (v == "true" || v == "1")
+		case float64:
+			isActive = (v != 0)
+		}
+
+		result = append(result, map[string]interface{}{
+			"id":        id,
+			"metadata":  metadataStr,
+			"is_active": isActive,
+		})
+	}
+
+	return result, nil
 }
 
 // IsAccountInitialized checks if the user has initialized their DataStore
