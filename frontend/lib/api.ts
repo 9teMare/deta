@@ -185,6 +185,16 @@ class ApiClient {
         return response.data!;
     }
 
+    async getUserDatasetsMetadata(user: string): Promise<Array<{ id: number; metadata: string; is_active: boolean }>> {
+        const response = await this.request<Array<{ id: number; metadata: string; is_active: boolean }>>("/api/v1/vault/metadata", {
+            method: "POST",
+            body: JSON.stringify({
+                user: user,
+            }),
+        });
+        return response.data || [];
+    }
+
     async registerToken(privateKey: string): Promise<TransactionResponse> {
         const response = await this.request<TransactionResponse>("/api/v1/token/register", {
             method: "POST",

@@ -17,9 +17,10 @@ interface DatasetDetail extends DatasetInfo {
 
 export function VaultView({ account }: VaultViewProps) {
     const [vault, setVault] = useState<VaultInfo | null>(null);
-    const [datasets, setDatasets] = useState<DatasetDetail[]>([]);
+    const [datasets, setDatasets] = useState<Map<number, DatasetDetail>>(new Map()); // Store loaded datasets by ID
+    const [expandedDatasets, setExpandedDatasets] = useState<Set<number>>(new Set()); // Track which datasets are expanded
+    const [loadingDatasets, setLoadingDatasets] = useState<Set<number>>(new Set()); // Track which datasets are loading
     const [loading, setLoading] = useState(false);
-    const [loadingDetails, setLoadingDetails] = useState(false);
     const [viewingCSV, setViewingCSV] = useState<{ datasetId: number; data: string[][] } | null>(null);
     const [loadingCSV, setLoadingCSV] = useState(false);
 
@@ -28,13 +29,8 @@ export function VaultView({ account }: VaultViewProps) {
         try {
             const result = await apiClient.getUserVault(account);
             setVault(result);
-
-            // Load details for each dataset
-            if (result.datasets.length > 0) {
-                await loadDatasetDetails(result.datasets);
-            } else {
-                setDatasets([]);
-            }
+            // Don't load details immediately - wait for user to expand
+            setDatasets(new Map());
         } catch (error: any) {
             toast.error(error.message || "Failed to load vault");
         } finally {
@@ -42,47 +38,62 @@ export function VaultView({ account }: VaultViewProps) {
         }
     };
 
-    const loadDatasetDetails = async (datasetIds: number[]) => {
-        setLoadingDetails(true);
+    // Load a single dataset detail on-demand
+    const loadDatasetDetail = async (datasetId: number) => {
+        // Check if already loaded
+        if (datasets.has(datasetId)) {
+            return;
+        }
+
+        // Check if already loading
+        if (loadingDatasets.has(datasetId)) {
+            return;
+        }
+
+        setLoadingDatasets((prev) => new Set(prev).add(datasetId));
+
         try {
-            console.log("Loading details for dataset IDs:", datasetIds);
-            const validIds = datasetIds.filter((id) => id != null && !isNaN(Number(id)));
-            console.log("Valid dataset IDs:", validIds);
+            const numericId = typeof datasetId === "string" ? parseInt(datasetId, 10) : Number(datasetId);
+            if (isNaN(numericId)) {
+                throw new Error(`Invalid dataset ID: ${datasetId}`);
+            }
 
-            const detailsPromises = validIds.map(async (id) => {
-                try {
-                    // Ensure id is a number
-                    const numericId = typeof id === "string" ? parseInt(id, 10) : Number(id);
-                    if (isNaN(numericId)) {
-                        throw new Error(`Invalid dataset ID: ${id}`);
-                    }
-                    console.log(`Fetching dataset ${numericId}...`);
-                    const detail = await apiClient.getDataset(account, numericId);
-                    console.log(`Successfully loaded dataset ${numericId}:`, detail);
-                    return { ...detail, id: numericId };
-                } catch (error) {
-                    console.error(`Failed to load dataset ${id}:`, error);
-                    // If dataset fetch fails, return minimal info
-                    const numericId = typeof id === "string" ? parseInt(id, 10) : Number(id);
-                    return {
-                        id: numericId,
-                        owner: account,
-                        data_hash: "",
-                        metadata: "",
-                        created_at: 0,
-                        is_active: false,
-                    } as DatasetDetail;
-                }
+            console.log(`Loading dataset ${numericId}...`);
+            const detail = await apiClient.getDataset(account, numericId);
+            console.log(`Successfully loaded dataset ${numericId}:`, detail);
+
+            setDatasets((prev) => {
+                const newMap = new Map(prev);
+                newMap.set(numericId, { ...detail, id: numericId });
+                return newMap;
             });
-
-            const details = await Promise.all(detailsPromises);
-            console.log("All dataset details loaded:", details);
-            // Show all datasets, including inactive ones (they'll be marked as inactive)
-            setDatasets(details);
         } catch (error: any) {
-            console.error("Failed to load dataset details:", error);
+            console.error(`Failed to load dataset ${datasetId}:`, error);
+            toast.error(`Failed to load dataset ${datasetId}: ${error.message || "Unknown error"}`);
         } finally {
-            setLoadingDetails(false);
+            setLoadingDatasets((prev) => {
+                const newSet = new Set(prev);
+                newSet.delete(datasetId);
+                return newSet;
+            });
+        }
+    };
+
+    // Toggle dataset expansion
+    const toggleDataset = async (datasetId: number) => {
+        const isExpanded = expandedDatasets.has(datasetId);
+
+        if (isExpanded) {
+            // Collapse
+            setExpandedDatasets((prev) => {
+                const newSet = new Set(prev);
+                newSet.delete(datasetId);
+                return newSet;
+            });
+        } else {
+            // Expand - load details if not already loaded
+            setExpandedDatasets((prev) => new Set(prev).add(datasetId));
+            await loadDatasetDetail(datasetId);
         }
     };
 
@@ -166,70 +177,110 @@ export function VaultView({ account }: VaultViewProps) {
                             <p className="text-sm text-muted-foreground">Total Datasets</p>
                             <p className="text-2xl font-bold">{vault?.count || 0}</p>
                         </div>
-                        <Button onClick={loadVault} disabled={loading || loadingDetails} variant="outline">
-                            {loading || loadingDetails ? "Loading..." : "Refresh"}
+                        <Button onClick={loadVault} disabled={loading} variant="outline">
+                            {loading ? "Loading..." : "Refresh"}
                         </Button>
                     </div>
 
-                    {loadingDetails && <p className="text-sm text-muted-foreground text-center py-4">Loading dataset details...</p>}
-
-                    {!loadingDetails && datasets.length > 0 && (
-                        <div className="space-y-4">
-                            <Label>Dataset Details</Label>
-                            {datasets.map((dataset, index) => {
-                                // Check for duplicate hashes
-                                const duplicateHash = datasets.some(
-                                    (d, i) => i !== index && d.data_hash === dataset.data_hash && d.data_hash !== "0x" && d.data_hash !== ""
-                                );
+                    {vault && vault.datasets.length > 0 && (
+                        <div className="space-y-2">
+                            <Label>Datasets ({vault.datasets.length})</Label>
+                            <p className="text-xs text-muted-foreground">Click on a dataset to load its details</p>
+                            {vault.datasets.map((datasetId) => {
+                                const dataset = datasets.get(datasetId);
+                                const isExpanded = expandedDatasets.has(datasetId);
+                                const isLoading = loadingDatasets.has(datasetId);
 
                                 return (
-                                    <Card key={dataset.id} className="border">
+                                    <Card key={datasetId} className="border">
                                         <CardContent className="pt-4">
                                             <div className="space-y-2">
-                                                <div className="flex justify-between items-start">
-                                                    <div>
-                                                        <p className="font-semibold">Dataset ID: {dataset.id}</p>
-                                                        <p className="text-xs text-muted-foreground">Created: {formatDate(dataset.created_at)}</p>
-                                                    </div>
-                                                    <div className="flex flex-col items-end gap-1">
-                                                        <span
-                                                            className={`px-2 py-1 rounded text-xs ${
-                                                                dataset.is_active
-                                                                    ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200"
-                                                                    : "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200"
-                                                            }`}
+                                                <div className="flex justify-between items-center">
+                                                    <div className="flex items-center gap-2">
+                                                        <Button
+                                                            size="sm"
+                                                            variant="ghost"
+                                                            onClick={() => toggleDataset(datasetId)}
+                                                            disabled={isLoading}
+                                                            className="h-8 w-8 p-0"
                                                         >
-                                                            {dataset.is_active ? "Active" : "Inactive"}
-                                                        </span>
-                                                        {!dataset.is_active && <span className="text-xs text-muted-foreground">(Deleted)</span>}
+                                                            {isExpanded ? "▼" : "▶"}
+                                                        </Button>
+                                                        <div>
+                                                            <p className="font-semibold">Dataset ID: {datasetId}</p>
+                                                            {dataset && (
+                                                                <p className="text-xs text-muted-foreground">
+                                                                    Created: {formatDate(dataset.created_at)}
+                                                                </p>
+                                                            )}
+                                                        </div>
                                                     </div>
+                                                    {dataset && (
+                                                        <div className="flex flex-col items-end gap-1">
+                                                            <span
+                                                                className={`px-2 py-1 rounded text-xs ${
+                                                                    dataset.is_active
+                                                                        ? "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200"
+                                                                        : "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200"
+                                                                }`}
+                                                            >
+                                                                {dataset.is_active ? "Active" : "Inactive"}
+                                                            </span>
+                                                            {!dataset.is_active && <span className="text-xs text-muted-foreground">(Deleted)</span>}
+                                                        </div>
+                                                    )}
                                                 </div>
-                                                {duplicateHash && (
-                                                    <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded p-2 text-xs text-yellow-800 dark:text-yellow-200">
-                                                        ⚠️ Warning: This dataset has the same data hash as another dataset. This usually means the
-                                                        same CSV file was uploaded twice.
+
+                                                {isLoading && <div className="text-sm text-muted-foreground py-2">Loading dataset details...</div>}
+
+                                                {isExpanded && dataset && (
+                                                    <div className="space-y-2 pt-2 border-t">
+                                                        {/* Check for duplicate hashes */}
+                                                        {Array.from(datasets.values()).some(
+                                                            (d) =>
+                                                                d.id !== dataset.id &&
+                                                                d.data_hash === dataset.data_hash &&
+                                                                dataset.data_hash !== "0x" &&
+                                                                dataset.data_hash !== ""
+                                                        ) && (
+                                                            <div className="bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded p-2 text-xs text-yellow-800 dark:text-yellow-200">
+                                                                ⚠️ Warning: This dataset has the same data hash as another dataset. This usually means
+                                                                the same CSV file was uploaded twice.
+                                                            </div>
+                                                        )}
+                                                        <div className="space-y-1 text-sm">
+                                                            <div>
+                                                                <span className="font-medium">Data Hash: </span>
+                                                                <span className="font-mono text-xs break-all">{dataset.data_hash || "N/A"}</span>
+                                                                {dataset.data_hash === "0x" && (
+                                                                    <span className="text-xs text-red-600 dark:text-red-400 ml-2">
+                                                                        (Empty hash - possible parsing error)
+                                                                    </span>
+                                                                )}
+                                                            </div>
+                                                            <div>
+                                                                <span className="font-medium">Metadata: </span>
+                                                                <div className="text-muted-foreground mt-1">{parseMetadata(dataset.metadata)}</div>
+                                                            </div>
+                                                        </div>
+                                                        <div className="pt-2">
+                                                            <Button
+                                                                size="sm"
+                                                                variant="outline"
+                                                                onClick={() => handleViewCSV(dataset)}
+                                                                disabled={loadingCSV}
+                                                            >
+                                                                {loadingCSV ? "Loading..." : "View CSV Data"}
+                                                            </Button>
+                                                        </div>
                                                     </div>
                                                 )}
-                                                <div className="space-y-1 text-sm">
-                                                    <div>
-                                                        <span className="font-medium">Data Hash: </span>
-                                                        <span className="font-mono text-xs break-all">{dataset.data_hash || "N/A"}</span>
-                                                        {dataset.data_hash === "0x" && (
-                                                            <span className="text-xs text-red-600 dark:text-red-400 ml-2">
-                                                                (Empty hash - possible parsing error)
-                                                            </span>
-                                                        )}
+
+                                                {isExpanded && !dataset && !isLoading && (
+                                                    <div className="text-sm text-red-600 dark:text-red-400 py-2">
+                                                        Failed to load dataset details. Please try again.
                                                     </div>
-                                                    <div>
-                                                        <span className="font-medium">Metadata: </span>
-                                                        <div className="text-muted-foreground mt-1">{parseMetadata(dataset.metadata)}</div>
-                                                    </div>
-                                                </div>
-                                                <div className="pt-2">
-                                                    <Button size="sm" variant="outline" onClick={() => handleViewCSV(dataset)} disabled={loadingCSV}>
-                                                        {loadingCSV ? "Loading..." : "View CSV Data"}
-                                                    </Button>
-                                                </div>
+                                                )}
                                             </div>
                                         </CardContent>
                                     </Card>
@@ -238,7 +289,7 @@ export function VaultView({ account }: VaultViewProps) {
                         </div>
                     )}
 
-                    {!loadingDetails && vault && vault.datasets.length === 0 && (
+                    {vault && vault.datasets.length === 0 && (
                         <p className="text-sm text-muted-foreground text-center py-4">No datasets in your vault yet</p>
                     )}
                 </CardContent>

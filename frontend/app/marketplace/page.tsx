@@ -39,16 +39,6 @@ export default function MarketplacePage() {
     const loadMarketplaceDatasets = async () => {
         setLoading(true);
         try {
-            // If user is connected, register them to help with discovery
-            if (connected && account) {
-                try {
-                    await apiClient.registerUserForMarketplace(account.address.toString());
-                } catch (err) {
-                    // Non-critical, just helps with discovery
-                    console.log("Failed to register user for marketplace:", err);
-                }
-            }
-            
             const result = await apiClient.getMarketplaceDatasets();
             setDatasets(result);
             

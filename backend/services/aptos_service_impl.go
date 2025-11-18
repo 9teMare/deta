@@ -17,6 +17,7 @@ import (
 	"github.com/aptos-labs/aptos-go-sdk/bcs"
 	"github.com/aptos-labs/aptos-go-sdk/crypto"
 	"github.com/datax/backend/config"
+	"github.com/hasura/go-graphql-client"
 )
 
 // Ensure AptosServiceImpl implements AptosService interface
@@ -24,9 +25,25 @@ var _ AptosService = (*AptosServiceImpl)(nil)
 
 // Update the AptosService to use the actual SDK
 type AptosServiceImpl struct {
-	client     *aptos.Client
-	chainID    uint8
-	httpClient *http.Client // HTTP client with timeout for API requests
+	client        *aptos.Client
+	chainID       uint8
+	httpClient    *http.Client    // HTTP client with timeout for API requests
+	graphqlClient *graphql.Client // GraphQL client for indexer queries
+}
+
+// authTransport wraps http.Transport to add Authorization header
+type authTransport struct {
+	apiKey string
+	base   http.RoundTripper
+}
+
+func (t *authTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req.Header.Set("Authorization", "Bearer "+t.apiKey)
+	fmt.Printf("DEBUG: Added Authorization header to request (key length: %d)\n", len(t.apiKey))
+	if t.base == nil {
+		return http.DefaultTransport.RoundTrip(req)
+	}
+	return t.base.RoundTrip(req)
 }
 
 // createHTTPClient creates an HTTP client with timeout and retry support
@@ -48,10 +65,37 @@ func NewAptosService() (*AptosServiceImpl, error) {
 		return nil, fmt.Errorf("failed to create Aptos client: %w", err)
 	}
 
+	// Create GraphQL client if indexer URL is configured
+	var graphqlClient *graphql.Client
+	if config.AppConfig.AptosIndexerURL != "" {
+		apiKey := strings.TrimSpace(config.AppConfig.AptosIndexerAPIKey)
+
+		// Create HTTP client with custom transport that adds Authorization header
+		var httpClient *http.Client
+		if apiKey != "" {
+			fmt.Printf("DEBUG: Initializing GraphQL client with API key (length: %d chars)\n", len(apiKey))
+			// Create a transport that adds the Authorization header
+			transport := &authTransport{
+				apiKey: apiKey,
+				base:   http.DefaultTransport,
+			}
+			httpClient = &http.Client{
+				Timeout:   30 * time.Second,
+				Transport: transport,
+			}
+		} else {
+			fmt.Printf("WARNING: APTOS_INDEXER_API_KEY is empty but indexer URL is set\n")
+			httpClient = &http.Client{Timeout: 30 * time.Second}
+		}
+
+		graphqlClient = graphql.NewClient(config.AppConfig.AptosIndexerURL, httpClient)
+	}
+
 	return &AptosServiceImpl{
-		client:     client,
-		chainID:    config.AppConfig.ChainID,
-		httpClient: createHTTPClient(),
+		client:        client,
+		chainID:       config.AppConfig.ChainID,
+		httpClient:    createHTTPClient(),
+		graphqlClient: graphqlClient,
 	}, nil
 }
 
@@ -757,20 +801,32 @@ func (s *AptosServiceImpl) DiscoverUsersFromChain() ([]string, error) {
 }
 
 // queryUsersFromGraphQLIndexer queries the Aptos Indexer GraphQL API to find all users who emitted DataSubmitted events
-// Queries account_transactions and filters by event type in the transaction
+// Queries events directly with event type filter
 // Reference: https://aptos.dev/build/indexer/indexer-api/indexer-reference
 func (s *AptosServiceImpl) queryUsersFromGraphQLIndexer(eventType string) ([]string, error) {
-	// Query account_transactions and check for events with matching type
-	// We'll filter in code since we can't filter by event type in the where clause
-	graphQLQuery := `query GetDataSubmittedEvents {
-		account_transactions(
-			limit: 1000,
-			order_by: { transaction_version: desc }
-		) {
-			account_address
-			transaction_version
+	// Try 'events' field first (without _v2 suffix)
+	// The Aptos GraphQL indexer uses 'events' as the table name
+	// graphQLQuery := fmt.Sprintf(`query GetDataSubmittedEvents {
+	// 	events(
+	// 		where: {
+	// 			type: { _eq: "%s" }
+	// 		},
+	// 		limit: 1000,
+	// 		order_by: { transaction_version: desc }
+	// 	) {
+	// 		account_address
+	// 		data
+	// 	}
+	// }`, eventType)
+	graphQLQuery := `query MyQuery {
+		datax_marketplace {
+			user
+			data_hash
+			dataset_id
+			metadata
 		}
-	}`
+		}
+		`
 
 	// Prepare GraphQL request
 	requestBody := map[string]interface{}{
@@ -782,12 +838,15 @@ func (s *AptosServiceImpl) queryUsersFromGraphQLIndexer(eventType string) ([]str
 		return nil, fmt.Errorf("failed to marshal GraphQL request: %w", err)
 	}
 
+	fmt.Printf("DEBUG: GraphQL query: %s\n", graphQLQuery)
+	fmt.Printf("DEBUG: Querying indexer at: %s\n", config.AppConfig.AptosIndexerURL)
+
 	// Retry logic: try up to 3 times with exponential backoff
 	// Add initial delay to avoid rate limiting
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
-			backoff := time.Duration(1<<uint(attempt-1)) * time.Second
+			backoff := time.Duration(1<<uint(attempt-1)) * time.Second * 3
 			fmt.Printf("DEBUG: Retrying GraphQL indexer query (attempt %d/%d) after %v\n", attempt+1, 3, backoff)
 			time.Sleep(backoff)
 		} else {
@@ -806,6 +865,15 @@ func (s *AptosServiceImpl) queryUsersFromGraphQLIndexer(eventType string) ([]str
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "application/json")
 		req.Header.Set("User-Agent", "DataX-Backend/1.0")
+
+		// Add API key if configured
+		apiKey := strings.TrimSpace(config.AppConfig.AptosIndexerAPIKey)
+		if apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+			fmt.Printf("DEBUG: Added Authorization header to manual HTTP request (key length: %d)\n", len(apiKey))
+		} else {
+			fmt.Printf("WARNING: No API key set for GraphQL request\n")
+		}
 
 		resp, err := s.httpClient.Do(req)
 		if err != nil {
@@ -838,20 +906,11 @@ func (s *AptosServiceImpl) queryUsersFromGraphQLIndexer(eventType string) ([]str
 			continue
 		}
 
-		var graphQLResponse struct {
-			Data struct {
-				EventsV2 []struct {
-					AccountAddress string          `json:"account_address"`
-					Data           json.RawMessage `json:"data"`
-				} `json:"events_v2"`
-			} `json:"data"`
-			Errors []struct {
-				Message string        `json:"message"`
-				Path    []interface{} `json:"path,omitempty"`
-			} `json:"errors"`
-		}
+		fmt.Printf("DEBUG: GraphQL response received (attempt %d), status: %d\n", attempt+1, resp.StatusCode)
 
-		if err := json.Unmarshal(bodyBytes, &graphQLResponse); err != nil {
+		// Parse response dynamically to handle both events and datax_marketplace queries
+		var rawResponse map[string]interface{}
+		if err := json.Unmarshal(bodyBytes, &rawResponse); err != nil {
 			lastErr = fmt.Errorf("failed to decode GraphQL response: %w", err)
 			fmt.Printf("DEBUG: Failed to decode GraphQL response (attempt %d): %v\n", attempt+1, err)
 			fmt.Printf("DEBUG: Response body: %s\n", string(bodyBytes))
@@ -859,41 +918,49 @@ func (s *AptosServiceImpl) queryUsersFromGraphQLIndexer(eventType string) ([]str
 		}
 
 		// Check for GraphQL errors
-		if len(graphQLResponse.Errors) > 0 {
-			errorMessages := make([]string, len(graphQLResponse.Errors))
-			for i, err := range graphQLResponse.Errors {
-				errorMessages[i] = err.Message
+		if errors, ok := rawResponse["errors"].([]interface{}); ok && len(errors) > 0 {
+			errorMessages := make([]string, len(errors))
+			for i, err := range errors {
+				if errMap, ok := err.(map[string]interface{}); ok {
+					if msg, ok := errMap["message"].(string); ok {
+						errorMessages[i] = msg
+					}
+				}
 			}
 			lastErr = fmt.Errorf("GraphQL errors: %s", strings.Join(errorMessages, "; "))
 			fmt.Printf("DEBUG: GraphQL errors (attempt %d): %v\n", attempt+1, errorMessages)
-
-			// If it's a schema/query error, don't retry (it won't work)
-			for _, err := range graphQLResponse.Errors {
-				if strings.Contains(err.Message, "Unknown field") ||
-					strings.Contains(err.Message, "Cannot query field") ||
-					strings.Contains(err.Message, "schema") {
-					fmt.Printf("DEBUG: Query structure error detected, not retrying\n")
-					return nil, lastErr
-				}
-			}
 			continue
 		}
 
-		// Extract users from events_v2
-		userSet := make(map[string]bool)
-		for _, event := range graphQLResponse.Data.EventsV2 {
-			// Add the account address that emitted the event
-			if event.AccountAddress != "" {
-				userSet[event.AccountAddress] = true
-			}
+		// Extract data
+		data, ok := rawResponse["data"].(map[string]interface{})
+		if !ok {
+			lastErr = fmt.Errorf("invalid response structure: missing 'data' field")
+			fmt.Printf("DEBUG: Invalid response structure. Response: %s\n", string(bodyBytes))
+			continue
+		}
 
-			// Also extract user from event data
-			var eventData struct {
-				User string `json:"user"`
+		// Try to extract users from datax_marketplace (if that's what was queried)
+		userSet := make(map[string]bool)
+		if marketplaceData, ok := data["datax_marketplace"].([]interface{}); ok {
+			fmt.Printf("DEBUG: Found datax_marketplace data, extracting users\n")
+			for _, entry := range marketplaceData {
+				if entryMap, ok := entry.(map[string]interface{}); ok {
+					if user, ok := entryMap["user"].(string); ok && user != "" {
+						userSet[user] = true
+					}
+				}
 			}
-			if err := json.Unmarshal(event.Data, &eventData); err == nil {
-				if eventData.User != "" {
-					userSet[eventData.User] = true
+		}
+
+		// Also try to extract from events (for backward compatibility)
+		if eventsData, ok := data["events"].([]interface{}); ok {
+			fmt.Printf("DEBUG: Found events data, extracting users\n")
+			for _, event := range eventsData {
+				if eventMap, ok := event.(map[string]interface{}); ok {
+					if addr, ok := eventMap["account_address"].(string); ok && addr != "" {
+						userSet[addr] = true
+					}
 				}
 			}
 		}
@@ -903,11 +970,127 @@ func (s *AptosServiceImpl) queryUsersFromGraphQLIndexer(eventType string) ([]str
 			users = append(users, user)
 		}
 
-		fmt.Printf("DEBUG: Successfully queried GraphQL indexer, found %d users\n", len(users))
+		fmt.Printf("DEBUG: Successfully queried GraphQL indexer, found %d unique users\n", len(users))
 		return users, nil
 	}
 
 	return nil, fmt.Errorf("GraphQL indexer query failed after 3 attempts: %w", lastErr)
+}
+
+// queryUsersFromGraphQLIndexerAlternative queries users by querying account_transactions and filtering events
+// This is a fallback when direct events query doesn't work
+func (s *AptosServiceImpl) queryUsersFromGraphQLIndexerAlternative(eventType string) ([]string, error) {
+	fmt.Printf("DEBUG: Trying alternative approach: query account_transactions with events\n")
+
+	// Query account_transactions and access events within them
+	graphQLQuery := `query GetDataSubmittedEvents {
+		account_transactions(
+			limit: 1000,
+			order_by: { transaction_version: desc }
+		) {
+			account_address
+			transaction_version
+			events {
+				type
+				data
+			}
+		}
+	}`
+
+	requestBody := map[string]interface{}{
+		"query": graphQLQuery,
+	}
+
+	jsonBody, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal GraphQL request: %w", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", config.AppConfig.AptosIndexerURL, strings.NewReader(string(jsonBody)))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", "DataX-Backend/1.0")
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("GraphQL request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GraphQL returned status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+
+	var graphQLResponse struct {
+		Data struct {
+			AccountTransactions []struct {
+				AccountAddress     string `json:"account_address"`
+				TransactionVersion int64  `json:"transaction_version"`
+				Events             []struct {
+					Type string          `json:"type"`
+					Data json.RawMessage `json:"data"`
+				} `json:"events"`
+			} `json:"account_transactions"`
+		} `json:"data"`
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+
+	if err := json.Unmarshal(bodyBytes, &graphQLResponse); err != nil {
+		return nil, fmt.Errorf("failed to decode GraphQL response: %w", err)
+	}
+
+	if len(graphQLResponse.Errors) > 0 {
+		errorMessages := make([]string, len(graphQLResponse.Errors))
+		for i, err := range graphQLResponse.Errors {
+			errorMessages[i] = err.Message
+		}
+		return nil, fmt.Errorf("GraphQL errors: %s", strings.Join(errorMessages, "; "))
+	}
+
+	// Filter events by type and extract users
+	userSet := make(map[string]bool)
+	for _, tx := range graphQLResponse.Data.AccountTransactions {
+		for _, event := range tx.Events {
+			if event.Type == eventType {
+				// Add the account address that emitted the event
+				if tx.AccountAddress != "" {
+					userSet[tx.AccountAddress] = true
+				}
+
+				// Also extract user from event data
+				var eventData struct {
+					User string `json:"user"`
+				}
+				if err := json.Unmarshal(event.Data, &eventData); err == nil {
+					if eventData.User != "" {
+						userSet[eventData.User] = true
+					}
+				}
+			}
+		}
+	}
+
+	users := make([]string, 0, len(userSet))
+	for user := range userSet {
+		users = append(users, user)
+	}
+
+	fmt.Printf("DEBUG: Alternative query found %d unique users\n", len(users))
+	return users, nil
 }
 
 // discoverUsersFromEventsTable queries recent transactions to find users who called submit_data
@@ -1013,10 +1196,110 @@ func (s *AptosServiceImpl) discoverUsersFromEventsTable() ([]string, error) {
 	return users, nil
 }
 
-// GetMarketplaceDatasets queries DataStore resources directly from the blockchain
+// queryMarketplaceFromGeomiIndexer queries the Geomi indexer's datax_marketplace table
+func (s *AptosServiceImpl) queryMarketplaceFromGeomiIndexer() ([]interface{}, error) {
+	if s.graphqlClient == nil {
+		return nil, fmt.Errorf("GraphQL client not initialized")
+	}
+
+	apiKey := strings.TrimSpace(config.AppConfig.AptosIndexerAPIKey)
+	if apiKey == "" {
+		return nil, fmt.Errorf("APTOS_INDEXER_API_KEY is required but not set")
+	}
+
+	fmt.Printf("DEBUG: Querying Geomi indexer at: %s\n", config.AppConfig.AptosIndexerURL)
+	fmt.Printf("DEBUG: API key present: %v (length: %d chars)\n", apiKey != "", len(apiKey))
+
+	// Use interface{} for dataset_id since it might be string or number
+	var query struct {
+		DataxMarketplace []struct {
+			User      string      `graphql:"user"`
+			DataHash  string      `graphql:"data_hash"`
+			DatasetID interface{} `graphql:"dataset_id"`
+			Metadata  string      `graphql:"metadata"`
+		} `graphql:"datax_marketplace"`
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := s.graphqlClient.Query(ctx, &query, nil); err != nil {
+		fmt.Printf("DEBUG: GraphQL client query error: %v\n", err)
+		return nil, fmt.Errorf("GraphQL query failed: %w", err)
+	}
+
+	fmt.Printf("DEBUG: GraphQL query succeeded, found %d entries in datax_marketplace\n", len(query.DataxMarketplace))
+
+	datasets := make([]interface{}, 0, len(query.DataxMarketplace))
+	for _, entry := range query.DataxMarketplace {
+		// Parse dataset_id which might be string or number
+		var datasetID uint64
+		switch v := entry.DatasetID.(type) {
+		case float64:
+			datasetID = uint64(v)
+		case string:
+			parsed, err := strconv.ParseUint(v, 10, 64)
+			if err != nil {
+				fmt.Printf("DEBUG: Failed to parse dataset_id '%v', skipping entry\n", v)
+				continue
+			}
+			datasetID = parsed
+		case int64:
+			datasetID = uint64(v)
+		case int:
+			datasetID = uint64(v)
+		default:
+			fmt.Printf("DEBUG: Unknown dataset_id type %T: %v, skipping entry\n", v, v)
+			continue
+		}
+
+		datasets = append(datasets, map[string]interface{}{
+			"id":         datasetID,
+			"owner":      entry.User,
+			"data_hash":  entry.DataHash,
+			"metadata":   entry.Metadata,
+			"created_at": 0,    // Geomi indexer doesn't provide this, default to 0
+			"is_active":  true, // Assume active if in marketplace
+		})
+	}
+
+	fmt.Printf("DEBUG: Converted %d marketplace entries to datasets\n", len(datasets))
+	return datasets, nil
+}
+
+// GetMarketplaceDatasets returns all datasets from the marketplace
+// Uses Geomi indexer to fetch data from datax_marketplace table, with blockchain fallback
 // It discovers users from chain events and queries their DataStore resources to get all datasets
 // This approach fetches data directly from on-chain state, not from memory
 func (s *AptosServiceImpl) GetMarketplaceDatasets() ([]interface{}, error) {
+	fmt.Printf("DEBUG: GetMarketplaceDatasets endpoint called\n")
+
+	// Check if indexer is configured
+	if config.AppConfig.AptosIndexerURL == "" {
+		fmt.Printf("DEBUG: Indexer URL not configured, falling back to blockchain query\n")
+		return s.getMarketplaceDatasetsFromBlockchain()
+	}
+
+	// Try to query from Geomi indexer first
+	fmt.Printf("DEBUG: Attempting to query Geomi indexer for marketplace data...\n")
+	datasets, err := s.queryMarketplaceFromGeomiIndexer()
+	if err != nil {
+		fmt.Printf("DEBUG: Failed to query Geomi indexer: %v\n", err)
+		fmt.Printf("DEBUG: Falling back to blockchain query method...\n")
+		return s.getMarketplaceDatasetsFromBlockchain()
+	}
+
+	fmt.Printf("DEBUG: Successfully queried Geomi indexer, found %d datasets\n", len(datasets))
+	if len(datasets) == 0 {
+		fmt.Printf("DEBUG: No datasets found in indexer (marketplace may be empty)\n")
+	}
+
+	fmt.Printf("DEBUG: GetMarketplaceDatasets completed, returning %d datasets\n", len(datasets))
+	return datasets, nil
+}
+
+// getMarketplaceDatasetsFromBlockchain is the fallback method that queries blockchain directly
+func (s *AptosServiceImpl) getMarketplaceDatasetsFromBlockchain() ([]interface{}, error) {
 	moduleAddr, err := parseAddress(config.AppConfig.DataXModuleAddr)
 	if err != nil {
 		return nil, err

@@ -23,28 +23,25 @@ export function DataOperations({ account }: DataOperationsProps) {
 
     const { signAndSubmitTransaction } = useWallet();
 
-    // Load active datasets for deletion dropdown
+    // Load active datasets for deletion dropdown (using batch endpoint)
     const loadActiveDatasets = async () => {
         setLoadingDatasets(true);
         try {
-            const vault = await apiClient.getUserVault(account);
-            if (vault.datasets.length === 0) {
-                setActiveDatasets([]);
-                return;
-            }
+            // Use the new batch endpoint to get all dataset metadata in one request
+            const metadata = await apiClient.getUserDatasetsMetadata(account);
 
-            // Load details for all datasets and filter active ones
-            const detailsPromises = vault.datasets.map(async (id) => {
-                try {
-                    const detail = await apiClient.getDataset(account, id);
-                    return detail;
-                } catch {
-                    return null;
-                }
-            });
+            // Filter active datasets and convert to DatasetInfo format
+            const active = metadata
+                .filter((d) => d.is_active)
+                .map((d) => ({
+                    id: d.id,
+                    owner: account,
+                    data_hash: "",
+                    metadata: d.metadata,
+                    created_at: 0,
+                    is_active: d.is_active,
+                })) as DatasetInfo[];
 
-            const details = await Promise.all(detailsPromises);
-            const active = details.filter((d) => d !== null && d.is_active) as DatasetInfo[];
             setActiveDatasets(active);
         } catch (error) {
             console.error("Failed to load active datasets:", error);
