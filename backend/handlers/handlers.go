@@ -54,9 +54,11 @@ func (h *Handler) InitializeUser(c *gin.Context) {
 	})
 }
 
-// SubmitData submits data to the registry
-func (h *Handler) SubmitData(c *gin.Context) {
-	var req models.SubmitDataRequest
+// CheckDataHash checks if a data hash already exists
+func (h *Handler) CheckDataHash(c *gin.Context) {
+	var req struct {
+		DataHash string `json:"data_hash" binding:"required"`
+	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, models.Response{
 			Success: false,
@@ -65,7 +67,7 @@ func (h *Handler) SubmitData(c *gin.Context) {
 		return
 	}
 
-	txHash, err := h.aptosService.SubmitData(req.PrivateKey, req.DataHash, req.Metadata)
+	exists, err := h.aptosService.CheckDataHashExists(req.DataHash)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.Response{
 			Success: false,
@@ -76,11 +78,7 @@ func (h *Handler) SubmitData(c *gin.Context) {
 
 	c.JSON(http.StatusOK, models.Response{
 		Success: true,
-		Data: models.TransactionResponse{
-			Hash:    txHash,
-			Success: true,
-			Message: "Data submitted successfully",
-		},
+		Data:    exists,
 	})
 }
 
@@ -274,6 +272,7 @@ func (h *Handler) GetDataset(c *gin.Context) {
 
 	datasetRaw, err := h.aptosService.GetDataset(req.User, req.DatasetID)
 	if err != nil {
+		fmt.Printf("ERROR: GetDataset failed: %v\n", err)
 		c.JSON(http.StatusInternalServerError, models.Response{
 			Success: false,
 			Error:   err.Error(),

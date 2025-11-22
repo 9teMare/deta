@@ -45,9 +45,9 @@ func main() {
 		api.POST("/users/check-initialization", handler.CheckInitialization)
 
 		// Data operations
-		api.POST("/data/submit", handler.SubmitData)
 		api.POST("/data/delete", handler.DeleteDataset)
 		api.POST("/data/get", handler.GetDataset)
+		api.POST("/data/check-hash", handler.CheckDataHash)
 
 		// Access control
 		api.POST("/access/grant", handler.GrantAccess)

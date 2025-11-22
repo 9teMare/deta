@@ -401,10 +401,14 @@ func (s *AptosServiceImpl) GetDataset(userAddress string, datasetID uint64) (int
 
 	// Query the DataStore resource directly since get_dataset is not a view function
 	resourceType := fmt.Sprintf("%s::data_registry::DataStore", moduleAddr.String())
+
+	nodeURL := strings.TrimSuffix(config.AppConfig.AptosNodeURL, "/")
 	resourceURL := fmt.Sprintf("%s/v1/accounts/%s/resource/%s",
-		config.AppConfig.AptosNodeURL,
+		nodeURL,
 		userAddr.String(),
 		url.PathEscape(resourceType))
+
+	fmt.Printf("DEBUG: Querying resource at URL: %s\n", resourceURL)
 
 	// Retry logic with exponential backoff for rate limiting
 	var resp *http.Response
@@ -1230,7 +1234,8 @@ func (s *AptosServiceImpl) queryMarketplaceFromGeomiIndexer() ([]interface{}, er
 
 	fmt.Printf("DEBUG: GraphQL query succeeded, found %d entries in datax_marketplace\n", len(query.DataxMarketplace))
 
-	datasets := make([]interface{}, 0, len(query.DataxMarketplace))
+	// Build initial dataset list from indexer
+	indexerDatasets := make([]map[string]interface{}, 0, len(query.DataxMarketplace))
 	for _, entry := range query.DataxMarketplace {
 		// Parse dataset_id which might be string or number
 		var datasetID uint64
@@ -1253,17 +1258,88 @@ func (s *AptosServiceImpl) queryMarketplaceFromGeomiIndexer() ([]interface{}, er
 			continue
 		}
 
-		datasets = append(datasets, map[string]interface{}{
+		indexerDatasets = append(indexerDatasets, map[string]interface{}{
 			"id":         datasetID,
 			"owner":      entry.User,
 			"data_hash":  entry.DataHash,
 			"metadata":   entry.Metadata,
-			"created_at": 0,    // Geomi indexer doesn't provide this, default to 0
-			"is_active":  true, // Assume active if in marketplace
+			"created_at": 0,
 		})
 	}
 
-	fmt.Printf("DEBUG: Converted %d marketplace entries to datasets\n", len(datasets))
+	fmt.Printf("DEBUG: Converted %d marketplace entries from indexer\n", len(indexerDatasets))
+
+	// CRITICAL: Verify is_active status from blockchain for each dataset
+	// The indexer only tracks DataSubmit events, not deletions
+	// So we must check the blockchain to see if datasets are still active
+	fmt.Printf("DEBUG: Verifying is_active status from blockchain for %d datasets...\n", len(indexerDatasets))
+
+	// Use concurrent worker pool to avoid timeouts (max 3 concurrent)
+	const maxConcurrent = 3
+	semaphore := make(chan struct{}, maxConcurrent)
+	var wg sync.WaitGroup
+
+	type verifiedDataset struct {
+		data     map[string]interface{}
+		isActive bool
+	}
+
+	resultsChan := make(chan verifiedDataset, len(indexerDatasets))
+
+	for _, ds := range indexerDatasets {
+		wg.Add(1)
+		go func(dataset map[string]interface{}) {
+			defer wg.Done()
+
+			// Acquire semaphore
+			semaphore <- struct{}{}
+			defer func() { <-semaphore }()
+
+			owner := dataset["owner"].(string)
+			datasetID := dataset["id"].(uint64)
+
+			// Query blockchain to get actual is_active status
+			datasetInfo, err := s.GetDataset(owner, datasetID)
+			if err != nil {
+				fmt.Printf("DEBUG: Failed to verify dataset %d for owner %s: %v, skipping\n", datasetID, owner, err)
+				return
+			}
+
+			// Extract is_active from the returned data
+			var isActive bool
+			if datasetMap, ok := datasetInfo.(map[string]interface{}); ok {
+				if active, ok := datasetMap["is_active"].(bool); ok {
+					isActive = active
+				}
+			}
+
+			// Send result
+			resultsChan <- verifiedDataset{data: dataset, isActive: isActive}
+		}(ds)
+	}
+
+	// Close results channel when all workers are done
+	go func() {
+		wg.Wait()
+		close(resultsChan)
+	}()
+
+	// Collect results
+	datasets := make([]interface{}, 0, len(indexerDatasets))
+	for result := range resultsChan {
+		if !result.isActive {
+			datasetID := result.data["id"].(uint64)
+			owner := result.data["owner"].(string)
+			fmt.Printf("DEBUG: Dataset %d from owner %s is inactive (deleted), excluding from marketplace\n", datasetID, owner)
+			continue
+		}
+
+		// Add is_active to the dataset
+		result.data["is_active"] = true
+		datasets = append(datasets, result.data)
+	}
+
+	fmt.Printf("DEBUG: After filtering deleted datasets: %d active datasets (from %d indexed)\n", len(datasets), len(indexerDatasets))
 	return datasets, nil
 }
 
@@ -1290,8 +1366,12 @@ func (s *AptosServiceImpl) GetMarketplaceDatasets() ([]interface{}, error) {
 	}
 
 	fmt.Printf("DEBUG: Successfully queried Geomi indexer, found %d datasets\n", len(datasets))
+
+	// If indexer returns 0 datasets, it might be empty OR it might be out of sync/broken
+	// So we should fall back to blockchain query just in case
 	if len(datasets) == 0 {
-		fmt.Printf("DEBUG: No datasets found in indexer (marketplace may be empty)\n")
+		fmt.Printf("DEBUG: No datasets found in indexer, falling back to blockchain query to be sure\n")
+		return s.getMarketplaceDatasetsFromBlockchain()
 	}
 
 	fmt.Printf("DEBUG: GetMarketplaceDatasets completed, returning %d datasets\n", len(datasets))
@@ -1889,4 +1969,70 @@ func (s *AptosServiceImpl) IsAccountInitialized(userAddress string) (bool, error
 
 	// Other status codes indicate an error
 	return false, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+}
+
+// CheckDataHashExists checks if a data hash already exists in the marketplace
+func (s *AptosServiceImpl) CheckDataHashExists(dataHash string) (bool, error) {
+	// Ensure hash format (0x prefix)
+	if !strings.HasPrefix(dataHash, "0x") {
+		dataHash = "0x" + dataHash
+	}
+
+	// 1. Try Indexer first (most efficient)
+	if config.AppConfig.AptosIndexerURL != "" {
+		exists, err := s.checkDataHashFromIndexer(dataHash)
+		if err == nil && exists {
+			// If indexer says it exists, it definitely exists
+			return true, nil
+		}
+		// If indexer says false, it might be lagging, so we fall back to blockchain
+		if err != nil {
+			fmt.Printf("DEBUG: Indexer check failed: %v. Falling back to blockchain.\n", err)
+		} else {
+			fmt.Printf("DEBUG: Indexer returned false, double-checking with blockchain (in case of lag).\n")
+		}
+	}
+
+	// 2. Fallback: Get all datasets and check (less efficient but reliable)
+	datasets, err := s.GetMarketplaceDatasets()
+	if err != nil {
+		return false, err
+	}
+
+	for _, d := range datasets {
+		if datasetMap, ok := d.(map[string]interface{}); ok {
+			if hash, ok := datasetMap["data_hash"].(string); ok {
+				if hash == dataHash {
+					return true, nil
+				}
+			}
+		}
+	}
+
+	return false, nil
+}
+
+func (s *AptosServiceImpl) checkDataHashFromIndexer(dataHash string) (bool, error) {
+	if s.graphqlClient == nil {
+		return false, fmt.Errorf("GraphQL client not initialized")
+	}
+
+	var query struct {
+		DataxMarketplace []struct {
+			DataHash string `graphql:"data_hash"`
+		} `graphql:"datax_marketplace(where: {data_hash: {_eq: $data_hash}})"`
+	}
+
+	variables := map[string]interface{}{
+		"data_hash": dataHash,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := s.graphqlClient.Query(ctx, &query, variables); err != nil {
+		return false, err
+	}
+
+	return len(query.DataxMarketplace) > 0, nil
 }

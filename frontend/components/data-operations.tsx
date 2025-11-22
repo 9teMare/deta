@@ -10,6 +10,7 @@ import { useWallet } from "@aptos-labs/wallet-adapter-react";
 import { buildTransaction } from "@/lib/aptos-client";
 import { CSVUpload } from "@/components/csv-upload";
 import { apiClient, type DatasetInfo } from "@/lib/api";
+import { Trash2, RefreshCw, Database } from "lucide-react";
 
 interface DataOperationsProps {
     account: string;
@@ -94,10 +95,6 @@ export function DataOperations({ account }: DataOperationsProps) {
             // Ensure account is a string
             const accountAddress = typeof account === "string" ? account : (account as any)?.address?.toString() || String(account);
 
-            console.log("Delete dataset - Account:", accountAddress);
-            console.log("Delete dataset - Dataset ID:", datasetIdNum);
-            console.log("Delete dataset - Dataset ID type:", typeof datasetIdNum);
-
             const transaction = await buildTransaction(
                 {
                     moduleAddress: "0x0b133cba97a77b2dee290919e27c72c7d49d8bf5a3294efbd8c40cc38a009eab",
@@ -107,9 +104,6 @@ export function DataOperations({ account }: DataOperationsProps) {
                 },
                 accountAddress
             );
-
-            console.log("Delete transaction:", JSON.stringify(transaction, null, 2));
-            console.log("Transaction function:", transaction?.data?.function);
 
             const response = await signAndSubmitTransaction(transaction);
 
@@ -130,51 +124,66 @@ export function DataOperations({ account }: DataOperationsProps) {
     };
 
     return (
-        <div className="space-y-4">
+        <div className="space-y-6">
             <CSVUpload account={account} />
 
-            <Card>
+            <Card className="bg-white/5 backdrop-blur-md border-white/10">
                 <CardHeader>
                     <div className="flex justify-between items-center">
                         <div>
-                            <CardTitle>Delete Dataset</CardTitle>
-                            <CardDescription>Delete an active dataset you own</CardDescription>
+                            <CardTitle className="flex items-center gap-2">
+                                <Trash2 className="w-5 h-5 text-red-400" />
+                                Delete Dataset
+                            </CardTitle>
+                            <CardDescription>Permanently remove a dataset from the registry</CardDescription>
                         </div>
-                        <Button onClick={loadActiveDatasets} disabled={loadingDatasets} variant="outline" size="sm">
-                            {loadingDatasets ? "Loading..." : "Refresh"}
+                        <Button 
+                            onClick={loadActiveDatasets} 
+                            disabled={loadingDatasets} 
+                            variant="outline" 
+                            size="sm"
+                            className="bg-white/5 border-white/10 hover:bg-white/10"
+                        >
+                            <RefreshCw className={`w-4 h-4 mr-2 ${loadingDatasets ? "animate-spin" : ""}`} />
+                            Refresh
                         </Button>
                     </div>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                    <div>
-                        <Label htmlFor="datasetId">Dataset ID</Label>
+                    <div className="bg-black/20 p-4 rounded-lg border border-white/5">
+                        <Label htmlFor="datasetId" className="text-gray-300 mb-2 block">Select Dataset</Label>
                         {loadingDatasets ? (
-                            <p className="text-sm text-muted-foreground py-2">Loading active datasets...</p>
+                            <p className="text-sm text-muted-foreground py-2 flex items-center gap-2">
+                                <RefreshCw className="w-3 h-3 animate-spin" /> Loading active datasets...
+                            </p>
                         ) : activeDatasets.length > 0 ? (
-                            <select
-                                id="datasetId"
-                                className="w-full px-3 py-2 border rounded-md bg-background"
-                                value={datasetId}
-                                onChange={(e) => setDatasetId(e.target.value)}
-                            >
-                                <option value="">Select a dataset to delete</option>
-                                {activeDatasets.map((dataset) => {
-                                    let description = "No description";
-                                    try {
-                                        if (dataset.metadata) {
-                                            const meta = JSON.parse(dataset.metadata);
-                                            description = meta.description || "No description";
+                            <div className="relative">
+                                <select
+                                    id="datasetId"
+                                    className="w-full px-3 py-2 border border-white/10 rounded-md bg-black/40 text-white appearance-none focus:ring-2 focus:ring-red-500/50 focus:border-red-500/50 transition-all"
+                                    value={datasetId}
+                                    onChange={(e) => setDatasetId(e.target.value)}
+                                >
+                                    <option value="" className="bg-gray-900">Select a dataset to delete</option>
+                                    {activeDatasets.map((dataset) => {
+                                        let description = "No description";
+                                        try {
+                                            if (dataset.metadata) {
+                                                const meta = JSON.parse(dataset.metadata);
+                                                description = meta.description || "No description";
+                                            }
+                                        } catch {
+                                            description = "No description";
                                         }
-                                    } catch {
-                                        description = "No description";
-                                    }
-                                    return (
-                                        <option key={dataset.id} value={dataset.id}>
-                                            Dataset #{dataset.id} - {description}
-                                        </option>
-                                    );
-                                })}
-                            </select>
+                                        return (
+                                            <option key={dataset.id} value={dataset.id} className="bg-gray-900">
+                                                Dataset #{dataset.id} - {description.substring(0, 30)}{description.length > 30 ? "..." : ""}
+                                            </option>
+                                        );
+                                    })}
+                                </select>
+                                <Database className="absolute right-3 top-2.5 w-4 h-4 text-gray-500 pointer-events-none" />
+                            </div>
                         ) : (
                             <>
                                 <Input
@@ -183,16 +192,34 @@ export function DataOperations({ account }: DataOperationsProps) {
                                     placeholder="Enter dataset ID manually"
                                     value={datasetId}
                                     onChange={(e) => setDatasetId(e.target.value)}
+                                    className="bg-black/40 border-white/10 focus:border-red-500/50 focus:ring-red-500/50"
                                 />
-                                <p className="text-xs text-muted-foreground mt-1">No active datasets found. Enter a dataset ID manually.</p>
+                                <p className="text-xs text-muted-foreground mt-2">No active datasets found. Enter a dataset ID manually.</p>
                             </>
                         )}
                     </div>
-                    <Button onClick={handleDeleteDataset} disabled={loading || !datasetId.trim()} variant="destructive" className="w-full">
-                        {loading ? "Deleting..." : "Delete Dataset"}
+                    
+                    <Button 
+                        onClick={handleDeleteDataset} 
+                        disabled={loading || !datasetId.trim()} 
+                        variant="destructive" 
+                        className="w-full bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/20"
+                    >
+                        {loading ? (
+                            <>
+                                <RefreshCw className="w-4 h-4 mr-2 animate-spin" />
+                                Deleting...
+                            </>
+                        ) : (
+                            <>
+                                <Trash2 className="w-4 h-4 mr-2" />
+                                Delete Dataset
+                            </>
+                        )}
                     </Button>
+                    
                     {activeDatasets.length === 0 && !loadingDatasets && (
-                        <p className="text-xs text-muted-foreground text-center">
+                        <p className="text-xs text-gray-500 text-center">
                             All your datasets may already be deleted, or you haven&apos;t created any yet.
                         </p>
                     )}

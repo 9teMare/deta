@@ -18,4 +18,5 @@ type AptosService interface {
 	IsAccountInitialized(userAddress string) (bool, error)
 	GetMarketplaceDatasets() ([]interface{}, error)
 	GetAccessRequests(ownerAddress string) ([]interface{}, error)
+	CheckDataHashExists(dataHash string) (bool, error)
 }
