@@ -17,9 +17,19 @@ import (
 	"github.com/datax/backend/config"
 )
 
+type StorageService interface {
+	StoreCSV(accountAddress string, data [][]string) (string, error)
+	RetrieveCSV(accountAddress string, blobName string) ([][]string, error)
+	// StoreEncryptedCSV stores encrypted CSV data and returns blob name and encryption metadata
+	StoreEncryptedCSV(accountAddress string, encryptedData []byte, encryptionMetadata string) (string, error)
+	// RetrieveEncryptedCSV retrieves encrypted CSV data
+	RetrieveEncryptedCSV(accountAddress string, blobName string) ([]byte, string, error)
+}
+
 type SupabaseServiceImpl struct {
-	s3Client   *s3.Client
-	bucketName string
+	s3Client          *s3.Client
+	bucketName        string
+	encryptionService *EncryptionService
 }
 
 func NewSupabaseService() StorageService {
@@ -78,8 +88,9 @@ func NewSupabaseService() StorageService {
 	})
 
 	return &SupabaseServiceImpl{
-		s3Client:   s3Client,
-		bucketName: config.AppConfig.SupabaseBucket,
+		s3Client:          s3Client,
+		bucketName:        config.AppConfig.SupabaseBucket,
+		encryptionService: NewEncryptionService(),
 	}
 }
 
@@ -119,6 +130,7 @@ func extractProjectRef(url string) string {
 }
 
 // StoreCSV stores CSV data in Supabase Storage (S3-compatible) and returns the blob name/path
+// NOTE: This method now encrypts data before storing. Use StoreEncryptedCSV for pre-encrypted data.
 func (s *SupabaseServiceImpl) StoreCSV(accountAddress string, data [][]string) (string, error) {
 	// Convert CSV to bytes
 	var buf bytes.Buffer
@@ -137,31 +149,99 @@ func (s *SupabaseServiceImpl) StoreCSV(accountAddress string, data [][]string) (
 
 	csvBytes := buf.Bytes()
 
+	// Derive encryption key from account address (deterministic)
+	// In production, you might want to use a user-provided key or key from wallet
+	encryptionKey := DeriveKeyFromAddress(accountAddress, []byte("datax-salt-v1"))
+
+	// Encrypt the CSV data
+	encryptedData, encryptionMetadata, err := s.encryptionService.EncryptCSVData(csvBytes, encryptionKey)
+	if err != nil {
+		return "", fmt.Errorf("failed to encrypt CSV data: %w", err)
+	}
+
 	// Generate a unique blob name based on account and timestamp
-	// Format: {account}/{timestamp}_{hash}.csv
+	// Format: {account}/{timestamp}_{hash}.csv.enc
 	timestamp := time.Now().Unix()
 	hashLen := 16
-	if len(csvBytes) < hashLen {
-		hashLen = len(csvBytes)
+	if len(encryptedData) < hashLen {
+		hashLen = len(encryptedData)
 	}
-	hash := fmt.Sprintf("%x", csvBytes[:hashLen])
-	blobName := fmt.Sprintf("%s/%d_%s.csv", accountAddress, timestamp, hash)
+	hash := fmt.Sprintf("%x", encryptedData[:hashLen])
+	blobName := fmt.Sprintf("%s/%d_%s.csv.enc", accountAddress, timestamp, hash)
 
-	// Upload to S3 using PutObject
+	// Store encryption metadata in a separate metadata file
+	metadataBlobName := fmt.Sprintf("%s.meta", blobName)
+	metadataBytes := []byte(encryptionMetadata)
+
 	ctx := context.Background()
+
+	// Upload encrypted data
+	_, err = s.s3Client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:      aws.String(s.bucketName),
+		Key:         aws.String(blobName),
+		Body:        bytes.NewReader(encryptedData),
+		ContentType: aws.String("application/octet-stream"), // Encrypted data
+	})
+	if err != nil {
+		fmt.Printf("ERROR: Supabase S3 upload failed: %v\n", err)
+		return "", fmt.Errorf("failed to upload encrypted data to Supabase S3: %w", err)
+	}
+
+	// Upload encryption metadata
+	_, err = s.s3Client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:      aws.String(s.bucketName),
+		Key:         aws.String(metadataBlobName),
+		Body:        bytes.NewReader(metadataBytes),
+		ContentType: aws.String("text/plain"),
+	})
+	if err != nil {
+		fmt.Printf("WARNING: Failed to upload encryption metadata: %v\n", err)
+		// Continue anyway, metadata might be stored on-chain
+	}
+
+	fmt.Printf("DEBUG: Successfully stored encrypted CSV in Supabase Storage with path: %s\n", blobName)
+	return blobName, nil
+}
+
+// StoreEncryptedCSV stores pre-encrypted CSV data (for client-side encryption)
+func (s *SupabaseServiceImpl) StoreEncryptedCSV(accountAddress string, encryptedData []byte, encryptionMetadata string) (string, error) {
+	// Generate a unique blob name based on account and timestamp
+	timestamp := time.Now().Unix()
+	hashLen := 16
+	if len(encryptedData) < hashLen {
+		hashLen = len(encryptedData)
+	}
+	hash := fmt.Sprintf("%x", encryptedData[:hashLen])
+	blobName := fmt.Sprintf("%s/%d_%s.csv.enc", accountAddress, timestamp, hash)
+
+	// Store encryption metadata in a separate metadata file
+	metadataBlobName := fmt.Sprintf("%s.meta", blobName)
+	metadataBytes := []byte(encryptionMetadata)
+
+	ctx := context.Background()
+
+	// Upload encrypted data
 	_, err := s.s3Client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:      aws.String(s.bucketName),
 		Key:         aws.String(blobName),
-		Body:        bytes.NewReader(csvBytes),
-		ContentType: aws.String("text/csv"),
+		Body:        bytes.NewReader(encryptedData),
+		ContentType: aws.String("application/octet-stream"),
 	})
-
 	if err != nil {
-		fmt.Printf("ERROR: Supabase S3 upload failed: %v\n", err)
-		return "", fmt.Errorf("failed to upload to Supabase S3: %w", err)
+		return "", fmt.Errorf("failed to upload encrypted data: %w", err)
 	}
 
-	fmt.Printf("DEBUG: Successfully stored CSV in Supabase Storage with path: %s\n", blobName)
+	// Upload encryption metadata
+	_, err = s.s3Client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:      aws.String(s.bucketName),
+		Key:         aws.String(metadataBlobName),
+		Body:        bytes.NewReader(metadataBytes),
+		ContentType: aws.String("text/plain"),
+	})
+	if err != nil {
+		fmt.Printf("WARNING: Failed to upload encryption metadata: %v\n", err)
+	}
+
 	return blobName, nil
 }
 
@@ -195,70 +275,135 @@ func (s *SupabaseServiceImpl) ListCSVFiles(accountAddress string) ([]string, err
 }
 
 // RetrieveCSV retrieves CSV data from Supabase Storage (S3-compatible) using blob name/path
+// NOTE: This method now decrypts data after retrieval. Use RetrieveEncryptedCSV for raw encrypted data.
 func (s *SupabaseServiceImpl) RetrieveCSV(accountAddress string, blobName string) ([][]string, error) {
-	ctx := context.Background()
-
-	// The blobName might be in different formats:
-	// 1. Full path: {account}/{timestamp}_{hash}.csv
-	// 2. Just filename: {timestamp}_{hash}.csv (missing account prefix)
-	// 3. Just filename without account: {timestamp}_{hash}.csv
-	key := blobName
-
-	// If blobName doesn't contain "/", it might be missing the account prefix
-	if !strings.Contains(blobName, "/") {
-		// Try with account prefix first
-		key = fmt.Sprintf("%s/%s", accountAddress, blobName)
-		fmt.Printf("DEBUG: Blob name missing account prefix, trying with prefix: %s\n", key)
-	} else {
-		// Check if the prefix matches the account address
-		parts := strings.Split(blobName, "/")
-		if len(parts) > 0 && parts[0] != accountAddress {
-			// The prefix doesn't match, but try it anyway (might be correct)
-			fmt.Printf("DEBUG: Blob name prefix (%s) doesn't match account (%s), using as-is\n", parts[0], accountAddress)
-		}
+	// Try to retrieve encrypted data first
+	encryptedData, metadata, err := s.RetrieveEncryptedCSV(accountAddress, blobName)
+	if err != nil {
+		// If encrypted retrieval fails, try old format (unencrypted) for backward compatibility
+		fmt.Printf("DEBUG: Encrypted retrieval failed, trying unencrypted format: %v\n", err)
+		return s.retrieveUnencryptedCSV(accountAddress, blobName)
 	}
 
-	fmt.Printf("DEBUG: Retrieving CSV from Supabase S3: bucket=%s, key=%s\n", s.bucketName, key)
+	// Derive encryption key from account address (same as encryption)
+	encryptionKey := DeriveKeyFromAddress(accountAddress, []byte("datax-salt-v1"))
 
-	// Download from S3 using GetObject
-	// Try with the constructed key first
+	// Decrypt the data
+	csvBytes, err := s.encryptionService.DecryptCSVData(encryptedData, encryptionKey, metadata)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decrypt CSV data: %w", err)
+	}
+
+	// Parse CSV
+	csvReader := csv.NewReader(bytes.NewReader(csvBytes))
+	records, err := csvReader.ReadAll()
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse CSV: %w", err)
+	}
+
+	fmt.Printf("DEBUG: Successfully retrieved and decrypted CSV from Supabase Storage: %d rows\n", len(records))
+	return records, nil
+}
+
+// RetrieveEncryptedCSV retrieves encrypted CSV data and metadata
+func (s *SupabaseServiceImpl) RetrieveEncryptedCSV(accountAddress string, blobName string) ([]byte, string, error) {
+	ctx := context.Background()
+
+	// Handle different blob name formats
+	key := blobName
+	if !strings.Contains(blobName, "/") {
+		key = fmt.Sprintf("%s/%s", accountAddress, blobName)
+	}
+
+	// Try with .enc extension if not present
+	if !strings.HasSuffix(key, ".enc") && !strings.HasSuffix(key, ".csv") {
+		key = key + ".enc"
+	} else if strings.HasSuffix(key, ".csv") {
+		// Replace .csv with .enc
+		key = strings.TrimSuffix(key, ".csv") + ".enc"
+	}
+
+	// Download encrypted data
 	result, err := s.s3Client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucketName),
 		Key:    aws.String(key),
 	})
 	if err != nil {
-		// If failed and we added the account prefix, try without it
-		if !strings.Contains(blobName, "/") && strings.Contains(key, "/") {
-			// Try the original blobName without prefix
-			fmt.Printf("DEBUG: Failed with account prefix, trying without prefix: %s\n", blobName)
+		// Try without .enc extension
+		if strings.HasSuffix(key, ".enc") {
+			keyWithoutEnc := strings.TrimSuffix(key, ".enc")
 			result, err = s.s3Client.GetObject(ctx, &s3.GetObjectInput{
 				Bucket: aws.String(s.bucketName),
-				Key:    aws.String(blobName),
+				Key:    aws.String(keyWithoutEnc),
 			})
 		}
 		if err != nil {
-			fmt.Printf("ERROR: Supabase S3 download failed: %v\n", err)
-			return nil, fmt.Errorf("failed to download from Supabase S3: %w", err)
+			return nil, "", fmt.Errorf("failed to download encrypted data: %w", err)
 		}
 	}
 	defer result.Body.Close()
 
-	// Read CSV data
+	encryptedData, err := io.ReadAll(result.Body)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to read encrypted data: %w", err)
+	}
+
+	// Download encryption metadata
+	metadataKey := fmt.Sprintf("%s.meta", key)
+	metadataResult, err := s.s3Client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucketName),
+		Key:    aws.String(metadataKey),
+	})
+	if err != nil {
+		// Try alternative metadata key
+		metadataKey = fmt.Sprintf("%s.meta", strings.TrimSuffix(key, ".enc"))
+		metadataResult, err = s.s3Client.GetObject(ctx, &s3.GetObjectInput{
+			Bucket: aws.String(s.bucketName),
+			Key:    aws.String(metadataKey),
+		})
+	}
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to download encryption metadata: %w", err)
+	}
+	defer metadataResult.Body.Close()
+
+	metadataBytes, err := io.ReadAll(metadataResult.Body)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to read encryption metadata: %w", err)
+	}
+
+	return encryptedData, string(metadataBytes), nil
+}
+
+// retrieveUnencryptedCSV retrieves unencrypted CSV (for backward compatibility)
+func (s *SupabaseServiceImpl) retrieveUnencryptedCSV(accountAddress string, blobName string) ([][]string, error) {
+	ctx := context.Background()
+
+	key := blobName
+	if !strings.Contains(blobName, "/") {
+		key = fmt.Sprintf("%s/%s", accountAddress, blobName)
+	}
+
+	result, err := s.s3Client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucketName),
+		Key:    aws.String(key),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to download from Supabase S3: %w", err)
+	}
+	defer result.Body.Close()
+
 	bodyBytes, err := io.ReadAll(result.Body)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read S3 data: %w", err)
 	}
 
-	fmt.Printf("DEBUG: Supabase download response: Body length=%d\n", len(bodyBytes))
-
-	// Parse CSV
 	csvReader := csv.NewReader(bytes.NewReader(bodyBytes))
 	records, err := csvReader.ReadAll()
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse CSV: %w", err)
 	}
 
-	fmt.Printf("DEBUG: Successfully retrieved CSV from Supabase Storage: %d rows\n", len(records))
 	return records, nil
 }
 

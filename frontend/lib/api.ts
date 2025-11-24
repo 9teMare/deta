@@ -70,7 +70,7 @@ class ApiClient {
         formData.append("account_address", accountAddress);
         formData.append("data_hash", dataHash);
         formData.append("schema", JSON.stringify(schema));
-        formData.append("csv_file", csvFile); // Send the actual file
+        formData.append("csv_file", csvFile); // Send the actual file (will be encrypted on backend)
 
         const response = await fetch(`${this.baseUrl}/api/v1/data/submit-csv`, {
             method: "POST",
@@ -84,6 +84,35 @@ class ApiClient {
 
         const result = await response.json();
         return result.data!;
+    }
+
+    async submitEncryptedCSV(
+        accountAddress: string,
+        encryptedData: Uint8Array,
+        encryptionMetadata: string,
+        schema: any,
+        dataHash: string
+    ): Promise<TransactionResponse> {
+        // Convert encrypted data to base64 for transmission
+        // Use Array.from to handle large arrays properly
+        const encryptedBase64 = btoa(
+            Array.from(encryptedData)
+                .map((b) => String.fromCharCode(b))
+                .join("")
+        );
+
+        const response = await this.request<TransactionResponse>("/api/v1/data/submit-encrypted-csv", {
+            method: "POST",
+            body: JSON.stringify({
+                account_address: accountAddress,
+                data_hash: dataHash,
+                schema: schema,
+                encrypted_data: encryptedBase64,
+                encryption_metadata: encryptionMetadata,
+                // Note: No private_key - frontend already submitted transaction to blockchain
+            }),
+        });
+        return response.data!;
     }
 
     async getDataset(user: string, datasetId: number): Promise<DatasetInfo> {

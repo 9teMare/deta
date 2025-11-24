@@ -1,9 +1,9 @@
 #[test_only]
-module aptos_data_network::access_control_test {
+module datax::access_control_test {
     use std::vector;
     use aptos_framework::account;
     use aptos_framework::timestamp;
-    use aptos_data_network::AccessControl;
+    use datax::access_control;
 
     const OWNER: address = @0x1;
     const REQUESTER1: address = @0x2;
@@ -22,10 +22,10 @@ module aptos_data_network::access_control_test {
         let aptos_framework = account::create_account_for_test(@aptos_framework);
         setup_timestamp(&aptos_framework);
         let owner = setup_owner();
-        AccessControl::init(&owner);
+        access_control::init(&owner);
 
         // Verify access list was created
-        let access_list = AccessControl::get_access_list(OWNER, 0);
+        let access_list = access_control::get_access_list(OWNER, 0);
         assert!(vector::length(&access_list) == 0, 1);
     }
 
@@ -34,19 +34,19 @@ module aptos_data_network::access_control_test {
         let aptos_framework = account::create_account_for_test(@aptos_framework);
         setup_timestamp(&aptos_framework);
         let owner = setup_owner();
-        AccessControl::init(&owner);
+        access_control::init(&owner);
 
         let current_time = timestamp::now_seconds();
         let expires_at = current_time + 3600; // 1 hour from now
 
-        AccessControl::grant_access(&owner, 0, REQUESTER1, expires_at);
+        access_control::grant_access(&owner, 0, REQUESTER1, expires_at);
 
         assert!(
-            AccessControl::has_access(OWNER, 0, REQUESTER1) == true,
+            access_control::has_access(OWNER, 0, REQUESTER1) == true,
             2
         );
         assert!(
-            AccessControl::has_access(OWNER, 0, REQUESTER2) == false,
+            access_control::has_access(OWNER, 0, REQUESTER2) == false,
             3
         );
     }
@@ -56,20 +56,20 @@ module aptos_data_network::access_control_test {
         let aptos_framework = account::create_account_for_test(@aptos_framework);
         setup_timestamp(&aptos_framework);
         let owner = setup_owner();
-        AccessControl::init(&owner);
+        access_control::init(&owner);
 
         let current_time = timestamp::now_seconds();
         let expires_at = current_time + 3600;
 
-        AccessControl::grant_access(&owner, 0, REQUESTER1, expires_at);
+        access_control::grant_access(&owner, 0, REQUESTER1, expires_at);
         assert!(
-            AccessControl::has_access(OWNER, 0, REQUESTER1) == true,
+            access_control::has_access(OWNER, 0, REQUESTER1) == true,
             4
         );
 
-        AccessControl::revoke_access(&owner, 0, REQUESTER1);
+        access_control::revoke_access(&owner, 0, REQUESTER1);
         assert!(
-            AccessControl::has_access(OWNER, 0, REQUESTER1) == false,
+            access_control::has_access(OWNER, 0, REQUESTER1) == false,
             5
         );
     }
@@ -79,29 +79,29 @@ module aptos_data_network::access_control_test {
         let aptos_framework = account::create_account_for_test(@aptos_framework);
         setup_timestamp(&aptos_framework);
         let owner = setup_owner();
-        AccessControl::init(&owner);
+        access_control::init(&owner);
 
         let current_time = timestamp::now_seconds();
         let expires_at = current_time + 3600;
 
-        AccessControl::grant_access(&owner, 0, REQUESTER1, expires_at);
-        AccessControl::grant_access(&owner, 0, REQUESTER2, expires_at);
-        AccessControl::grant_access(&owner, 1, REQUESTER1, expires_at);
+        access_control::grant_access(&owner, 0, REQUESTER1, expires_at);
+        access_control::grant_access(&owner, 0, REQUESTER2, expires_at);
+        access_control::grant_access(&owner, 1, REQUESTER1, expires_at);
 
         assert!(
-            AccessControl::has_access(OWNER, 0, REQUESTER1) == true,
+            access_control::has_access(OWNER, 0, REQUESTER1) == true,
             6
         );
         assert!(
-            AccessControl::has_access(OWNER, 0, REQUESTER2) == true,
+            access_control::has_access(OWNER, 0, REQUESTER2) == true,
             7
         );
         assert!(
-            AccessControl::has_access(OWNER, 1, REQUESTER1) == true,
+            access_control::has_access(OWNER, 1, REQUESTER1) == true,
             8
         );
         assert!(
-            AccessControl::has_access(OWNER, 1, REQUESTER2) == false,
+            access_control::has_access(OWNER, 1, REQUESTER2) == false,
             9
         );
     }
@@ -111,18 +111,18 @@ module aptos_data_network::access_control_test {
         let aptos_framework = account::create_account_for_test(@aptos_framework);
         setup_timestamp(&aptos_framework);
         let owner = setup_owner();
-        AccessControl::init(&owner);
+        access_control::init(&owner);
 
         let current_time = timestamp::now_seconds();
         let expires_at1 = current_time + 3600;
         let expires_at2 = current_time + 7200; // 2 hours
 
-        AccessControl::grant_access(&owner, 0, REQUESTER1, expires_at1);
-        AccessControl::grant_access(&owner, 0, REQUESTER1, expires_at2); // Update
+        access_control::grant_access(&owner, 0, REQUESTER1, expires_at1);
+        access_control::grant_access(&owner, 0, REQUESTER1, expires_at2); // Update
 
         // Should still have access with new expiration
         assert!(
-            AccessControl::has_access(OWNER, 0, REQUESTER1) == true,
+            access_control::has_access(OWNER, 0, REQUESTER1) == true,
             10
         );
     }
@@ -132,19 +132,19 @@ module aptos_data_network::access_control_test {
         let aptos_framework = account::create_account_for_test(@aptos_framework);
         setup_timestamp(&aptos_framework);
         let owner = setup_owner();
-        AccessControl::init(&owner);
+        access_control::init(&owner);
 
         let current_time = timestamp::now_seconds();
         let expires_at = current_time + 3600;
 
-        AccessControl::grant_access(&owner, 0, REQUESTER1, expires_at);
-        AccessControl::grant_access(&owner, 0, REQUESTER2, expires_at);
-        AccessControl::grant_access(&owner, 1, REQUESTER1, expires_at);
+        access_control::grant_access(&owner, 0, REQUESTER1, expires_at);
+        access_control::grant_access(&owner, 0, REQUESTER2, expires_at);
+        access_control::grant_access(&owner, 1, REQUESTER1, expires_at);
 
-        let access_list = AccessControl::get_access_list(OWNER, 0);
+        let access_list = access_control::get_access_list(OWNER, 0);
         assert!(vector::length(&access_list) == 2, 11);
 
-        let access_list2 = AccessControl::get_access_list(OWNER, 1);
+        let access_list2 = access_control::get_access_list(OWNER, 1);
         assert!(vector::length(&access_list2) == 1, 12);
     }
 
@@ -158,9 +158,9 @@ module aptos_data_network::access_control_test {
         let current_time = timestamp::now_seconds();
         let expires_at = current_time + 3600;
 
-        AccessControl::grant_access(&owner, 0, REQUESTER1, expires_at);
+        access_control::grant_access(&owner, 0, REQUESTER1, expires_at);
         assert!(
-            AccessControl::has_access(OWNER, 0, REQUESTER1) == true,
+            access_control::has_access(OWNER, 0, REQUESTER1) == true,
             13
         );
     }
@@ -169,11 +169,11 @@ module aptos_data_network::access_control_test {
     fun test_nonexistent_access_list() {
         // Test functions on non-existent access list
         assert!(
-            AccessControl::has_access(OWNER, 0, REQUESTER1) == false,
+            access_control::has_access(OWNER, 0, REQUESTER1) == false,
             14
         );
 
-        let access_list = AccessControl::get_access_list(OWNER, 0);
+        let access_list = access_control::get_access_list(OWNER, 0);
         assert!(vector::length(&access_list) == 0, 15);
     }
 }

@@ -3,14 +3,15 @@ module datax::data_registry {
     use std::vector;
     use aptos_framework::event;
     use aptos_framework::account;
-    use aptos_data_network::UserVault;
+    use datax::user_vault;
 
     /// Event storing a hash reference to user data
     struct DataSubmitted has copy, drop, store {
         user: address,
         dataset_id: u64,
         data_hash: vector<u8>,
-        metadata: vector<u8>
+        metadata: vector<u8>,
+        encryption_metadata: vector<u8> // Base64-encoded encryption nonce/metadata
     }
 
     struct DataDeleted has copy, drop, store {
@@ -24,6 +25,8 @@ module datax::data_registry {
         owner: address,
         data_hash: vector<u8>,
         metadata: vector<u8>,
+        encryption_metadata: vector<u8>, // Base64-encoded encryption nonce/metadata
+        encryption_algorithm: vector<u8>, // e.g., "AES-256-GCM"
         created_at: u64,
         is_active: bool
     }
@@ -57,13 +60,19 @@ module datax::data_registry {
                 }
             );
             // Also initialize user vault
-            UserVault::init(user);
+            user_vault::init(user);
         };
     }
 
     /// Users submit hashed data reference with metadata
+    /// encryption_metadata: Base64-encoded encryption nonce (for AES-256-GCM)
+    /// encryption_algorithm: Algorithm identifier (e.g., "AES-256-GCM")
     public entry fun submit_data(
-        user: &signer, data_hash: vector<u8>, metadata: vector<u8>
+        user: &signer,
+        data_hash: vector<u8>,
+        metadata: vector<u8>,
+        encryption_metadata: vector<u8>,
+        encryption_algorithm: vector<u8>
     ) acquires DataStore {
         let user_addr = signer::address_of(user);
 
@@ -82,6 +91,8 @@ module datax::data_registry {
             owner: user_addr,
             data_hash,
             metadata,
+            encryption_metadata,
+            encryption_algorithm,
             created_at: timestamp,
             is_active: true
         };
@@ -99,19 +110,28 @@ module datax::data_registry {
                 user: user_addr,
                 dataset_id,
                 data_hash: stored_dataset.data_hash,
-                metadata: stored_dataset.metadata
+                metadata: stored_dataset.metadata,
+                encryption_metadata: stored_dataset.encryption_metadata
             }
         );
 
         // Add to user vault (will initialize if needed)
-        UserVault::init(user);
-        UserVault::add_dataset(user, dataset_id);
+        user_vault::init(user);
+        user_vault::add_dataset(user, dataset_id);
+    }
+
+    /// Legacy submit_data function for backward compatibility (empty encryption fields)
+    public entry fun submit_data_legacy(
+        user: &signer, data_hash: vector<u8>, metadata: vector<u8>
+    ) acquires DataStore {
+        let empty_vec = vector::empty<u8>();
+        submit_data(user, data_hash, metadata, empty_vec, empty_vec);
     }
 
     /// Get dataset information
     public fun get_dataset(
         user: address, dataset_id: u64
-    ): (vector<u8>, vector<u8>, u64, bool) acquires DataStore {
+    ): (vector<u8>, vector<u8>, vector<u8>, vector<u8>, u64, bool) acquires DataStore {
         let store = borrow_global<DataStore>(user);
         let datasets = &store.datasets;
         let len = vector::length(datasets);
@@ -123,6 +143,8 @@ module datax::data_registry {
                 return (
                     dataset.data_hash,
                     dataset.metadata,
+                    dataset.encryption_metadata,
+                    dataset.encryption_algorithm,
                     dataset.created_at,
                     dataset.is_active
                 )
@@ -155,7 +177,7 @@ module datax::data_registry {
                 );
 
                 // Remove from vault (vault should exist if dataset exists)
-                UserVault::remove_dataset(user, dataset_id);
+                user_vault::remove_dataset(user, dataset_id);
                 return
             };
             i = i + 1;

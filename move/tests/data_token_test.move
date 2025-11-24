@@ -33,6 +33,7 @@ module datax::data_token_test {
         let owner = setup_owner();
         let user1 = setup_user1();
 
+        // Initialize coin for this test (tests are isolated, so this should work)
         data_token::init(&owner);
         data_token::register(&user1);
 
@@ -45,6 +46,7 @@ module datax::data_token_test {
         let owner = setup_owner();
         let user1 = setup_user1();
 
+        // Initialize coin for this test
         data_token::init(&owner);
         data_token::register(&user1);
 
@@ -61,6 +63,7 @@ module datax::data_token_test {
         let user1 = setup_user1();
         let user2 = setup_user2();
 
+        // Initialize coin for this test
         data_token::init(&owner);
         data_token::register(&user1);
         data_token::register(&user2);

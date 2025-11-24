@@ -11,6 +11,7 @@ import { buildTransaction } from "@/lib/aptos-client";
 import { CSVUpload } from "@/components/csv-upload";
 import { apiClient, type DatasetInfo } from "@/lib/api";
 import { Trash2, RefreshCw, Database } from "lucide-react";
+import { DATAX_MODULE_ADDRESS } from "@/constants";
 
 interface DataOperationsProps {
     account: string;
@@ -97,7 +98,7 @@ export function DataOperations({ account }: DataOperationsProps) {
 
             const transaction = await buildTransaction(
                 {
-                    moduleAddress: "0x0b133cba97a77b2dee290919e27c72c7d49d8bf5a3294efbd8c40cc38a009eab",
+                    moduleAddress: DATAX_MODULE_ADDRESS,
                     moduleName: "data_registry",
                     functionName: "delete_dataset",
                     args: [datasetIdNum],
@@ -137,10 +138,10 @@ export function DataOperations({ account }: DataOperationsProps) {
                             </CardTitle>
                             <CardDescription>Permanently remove a dataset from the registry</CardDescription>
                         </div>
-                        <Button 
-                            onClick={loadActiveDatasets} 
-                            disabled={loadingDatasets} 
-                            variant="outline" 
+                        <Button
+                            onClick={loadActiveDatasets}
+                            disabled={loadingDatasets}
+                            variant="outline"
                             size="sm"
                             className="bg-white/5 border-white/10 hover:bg-white/10"
                         >
@@ -151,7 +152,9 @@ export function DataOperations({ account }: DataOperationsProps) {
                 </CardHeader>
                 <CardContent className="space-y-4">
                     <div className="bg-black/20 p-4 rounded-lg border border-white/5">
-                        <Label htmlFor="datasetId" className="text-gray-300 mb-2 block">Select Dataset</Label>
+                        <Label htmlFor="datasetId" className="text-gray-300 mb-2 block">
+                            Select Dataset
+                        </Label>
                         {loadingDatasets ? (
                             <p className="text-sm text-muted-foreground py-2 flex items-center gap-2">
                                 <RefreshCw className="w-3 h-3 animate-spin" /> Loading active datasets...
@@ -164,7 +167,9 @@ export function DataOperations({ account }: DataOperationsProps) {
                                     value={datasetId}
                                     onChange={(e) => setDatasetId(e.target.value)}
                                 >
-                                    <option value="" className="bg-gray-900">Select a dataset to delete</option>
+                                    <option value="" className="bg-gray-900">
+                                        Select a dataset to delete
+                                    </option>
                                     {activeDatasets.map((dataset) => {
                                         let description = "No description";
                                         try {
@@ -177,7 +182,8 @@ export function DataOperations({ account }: DataOperationsProps) {
                                         }
                                         return (
                                             <option key={dataset.id} value={dataset.id} className="bg-gray-900">
-                                                Dataset #{dataset.id} - {description.substring(0, 30)}{description.length > 30 ? "..." : ""}
+                                                Dataset #{dataset.id} - {description.substring(0, 30)}
+                                                {description.length > 30 ? "..." : ""}
                                             </option>
                                         );
                                     })}
@@ -198,11 +204,11 @@ export function DataOperations({ account }: DataOperationsProps) {
                             </>
                         )}
                     </div>
-                    
-                    <Button 
-                        onClick={handleDeleteDataset} 
-                        disabled={loading || !datasetId.trim()} 
-                        variant="destructive" 
+
+                    <Button
+                        onClick={handleDeleteDataset}
+                        disabled={loading || !datasetId.trim()}
+                        variant="destructive"
                         className="w-full bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/20"
                     >
                         {loading ? (
@@ -217,7 +223,7 @@ export function DataOperations({ account }: DataOperationsProps) {
                             </>
                         )}
                     </Button>
-                    
+
                     {activeDatasets.length === 0 && !loadingDatasets && (
                         <p className="text-xs text-gray-500 text-center">
                             All your datasets may already be deleted, or you haven&apos;t created any yet.

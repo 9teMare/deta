@@ -4,8 +4,8 @@ version = "0.0.1"
 authors = []
 
 [addresses]
-aptos_data_network = "0x0b133cba97a77b2dee290919e27c72c7d49d8bf5a3294efbd8c40cc38a009eab"
-datax = "0x0b133cba97a77b2dee290919e27c72c7d49d8bf5a3294efbd8c40cc38a009eab"
+aptos_data_network = "0xd5adda38d5e67d6086f9451e75137b684d41c1639a6e0597e39025d7f72f0f0a"
+datax = "0xd5adda38d5e67d6086f9451e75137b684d41c1639a6e0597e39025d7f72f0f0a"
 
 [dependencies.AptosFramework]
 git = "https://github.com/aptos-labs/aptos-framework.git"

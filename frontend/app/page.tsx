@@ -16,6 +16,7 @@ import Link from "next/link";
 import { AnimatedBackground } from "@/components/ui/animated-background";
 import { motion } from "framer-motion";
 import { Database, Shield, Lock, LayoutDashboard, ArrowRight } from "lucide-react";
+import { DATAX_MODULE_ADDRESS } from "@/constants";
 
 export default function Home() {
     const { account, connected, signAndSubmitTransaction } = useWallet();
@@ -37,7 +38,7 @@ export default function Home() {
             // Build transaction to initialize user
             const transaction = await buildTransaction(
                 {
-                    moduleAddress: "0x0b133cba97a77b2dee290919e27c72c7d49d8bf5a3294efbd8c40cc38a009eab", // DataX module address
+                    moduleAddress: DATAX_MODULE_ADDRESS, // DataX module address
                     moduleName: "data_registry",
                     functionName: "init",
                     args: [],
@@ -91,11 +92,11 @@ export default function Home() {
     return (
         <div className="min-h-screen relative">
             <AnimatedBackground />
-            
+
             <div className="container mx-auto px-4 py-12 relative z-10">
                 <div className="max-w-6xl mx-auto">
                     {/* Header */}
-                    <motion.div 
+                    <motion.div
                         initial={{ opacity: 0, y: -20 }}
                         animate={{ opacity: 1, y: 0 }}
                         transition={{ duration: 0.5 }}
@@ -110,7 +111,7 @@ export default function Home() {
                     </motion.div>
 
                     {/* Wallet Connection */}
-                    <motion.div 
+                    <motion.div
                         initial={{ opacity: 0, scale: 0.9 }}
                         animate={{ opacity: 1, scale: 1 }}
                         transition={{ duration: 0.5, delay: 0.2 }}
@@ -120,11 +121,7 @@ export default function Home() {
                     </motion.div>
 
                     {connected && account && (
-                        <motion.div
-                            initial={{ opacity: 0, y: 20 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ duration: 0.5, delay: 0.4 }}
-                        >
+                        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5, delay: 0.4 }}>
                             {/* Initialize User */}
                             {checkingInit ? (
                                 <Card className="mb-8 border-white/10 bg-white/5 backdrop-blur-lg">
@@ -149,7 +146,10 @@ export default function Home() {
                                         <CardDescription>Initialize your data store and vault (one-time setup)</CardDescription>
                                     </CardHeader>
                                     <CardContent>
-                                        <Button onClick={handleInitialize} className="w-full bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-600 hover:to-orange-600 text-white border-0">
+                                        <Button
+                                            onClick={handleInitialize}
+                                            className="w-full bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-600 hover:to-orange-600 text-white border-0"
+                                        >
                                             Initialize User Account
                                         </Button>
                                         <p className="text-xs text-muted-foreground mt-2 text-center">
@@ -167,17 +167,26 @@ export default function Home() {
                                             <Database className="w-4 h-4 mr-2" />
                                             Data Operations
                                         </TabsTrigger>
-                                        <TabsTrigger value="access" className="data-[state=active]:bg-primary/20 data-[state=active]:text-primary py-3">
+                                        <TabsTrigger
+                                            value="access"
+                                            className="data-[state=active]:bg-primary/20 data-[state=active]:text-primary py-3"
+                                        >
                                             <Shield className="w-4 h-4 mr-2" />
                                             Access Control
                                         </TabsTrigger>
-                                        <TabsTrigger value="vault" className="data-[state=active]:bg-primary/20 data-[state=active]:text-primary py-3">
+                                        <TabsTrigger
+                                            value="vault"
+                                            className="data-[state=active]:bg-primary/20 data-[state=active]:text-primary py-3"
+                                        >
                                             <Lock className="w-4 h-4 mr-2" />
                                             My Vault
                                         </TabsTrigger>
                                     </TabsList>
                                     <Link href="/marketplace">
-                                        <Button variant="outline" className="w-full md:w-auto bg-white/5 backdrop-blur-md border-white/10 hover:bg-white/10">
+                                        <Button
+                                            variant="outline"
+                                            className="w-full md:w-auto bg-white/5 backdrop-blur-md border-white/10 hover:bg-white/10"
+                                        >
                                             <LayoutDashboard className="w-4 h-4 mr-2" />
                                             Marketplace
                                             <ArrowRight className="w-4 h-4 ml-2" />
@@ -201,11 +210,7 @@ export default function Home() {
                     )}
 
                     {!connected && (
-                        <motion.div
-                            initial={{ opacity: 0, y: 20 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ duration: 0.5, delay: 0.4 }}
-                        >
+                        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.5, delay: 0.4 }}>
                             <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-12">
                                 <Card className="bg-white/5 backdrop-blur-sm border-white/10 hover:bg-white/10 transition-colors">
                                     <CardHeader>

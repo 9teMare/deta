@@ -21,6 +21,7 @@ module datax::data_token {
         );
     }
 
+
     /// Register a user to receive DTN
     public entry fun register(account: &signer) {
         coin::register<DataToken>(account);

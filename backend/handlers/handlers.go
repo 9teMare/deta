@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"encoding/base64"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -759,6 +760,128 @@ func (h *Handler) SubmitCSV(c *gin.Context) {
 				return 0
 			}(),
 			"schema": schema,
+		},
+	})
+}
+
+// SubmitEncryptedCSV handles encrypted CSV data submission
+func (h *Handler) SubmitEncryptedCSV(c *gin.Context) {
+	var req struct {
+		AccountAddress      string      `json:"account_address" binding:"required"`
+		DataHash            string      `json:"data_hash" binding:"required"`
+		Schema              interface{} `json:"schema" binding:"required"`
+		EncryptedData       string      `json:"encrypted_data" binding:"required"`      // Base64-encoded
+		EncryptionMetadata  string      `json:"encryption_metadata" binding:"required"` // Base64-encoded nonce
+		PrivateKey          string      `json:"private_key"`                            // Optional: if provided, submit to blockchain
+		EncryptionAlgorithm string      `json:"encryption_algorithm"`                   // Optional: defaults to "AES-256-GCM"
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.Response{
+			Success: false,
+			Error:   "Invalid request: " + err.Error(),
+		})
+		return
+	}
+
+	// Decode base64 encrypted data
+	encryptedBytes, err := base64.StdEncoding.DecodeString(req.EncryptedData)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, models.Response{
+			Success: false,
+			Error:   "Failed to decode encrypted data: " + err.Error(),
+		})
+		return
+	}
+
+	fmt.Printf("DEBUG: Encrypted CSV submitted for user %s (encrypted size: %d bytes)\n", req.AccountAddress, len(encryptedBytes))
+
+	// Store encrypted CSV data in Supabase S3
+	blobName, err := h.storageService.StoreEncryptedCSV(req.AccountAddress, encryptedBytes, req.EncryptionMetadata)
+	if err != nil {
+		fmt.Printf("ERROR: Failed to store encrypted CSV in Supabase S3: %v\n", err)
+		c.JSON(http.StatusInternalServerError, models.Response{
+			Success: false,
+			Error:   fmt.Sprintf("Failed to store encrypted CSV data: %v", err),
+		})
+		return
+	}
+	fmt.Printf("DEBUG: Stored encrypted CSV data in Supabase S3 with blob name: %s for account: %s\n", blobName, req.AccountAddress)
+
+	// Build metadata JSON from schema
+	metadataJSON, err := json.Marshal(req.Schema)
+	if err != nil {
+		fmt.Printf("WARNING: Failed to marshal schema to JSON: %v\n", err)
+		metadataJSON = []byte("{}")
+	}
+
+	// Set default encryption algorithm if not provided
+	encryptionAlgorithm := req.EncryptionAlgorithm
+	if encryptionAlgorithm == "" {
+		encryptionAlgorithm = "AES-256-GCM"
+	}
+
+	// Submit to blockchain if private key is provided
+	// Note: Frontend typically handles blockchain submission, so private_key is usually not provided
+	var txHash string
+	if req.PrivateKey != "" {
+		fmt.Printf("DEBUG: Private key provided, submitting encrypted data to blockchain for account: %s\n", req.AccountAddress)
+		txHash, err = h.aptosService.SubmitDataWithEncryption(
+			req.PrivateKey,
+			req.DataHash,
+			string(metadataJSON),
+			req.EncryptionMetadata,
+			encryptionAlgorithm,
+		)
+		if err != nil {
+			fmt.Printf("ERROR: Failed to submit to blockchain: %v\n", err)
+			// Don't fail the whole request - data is already stored
+			// Just log the error and continue
+		} else {
+			fmt.Printf("DEBUG: Successfully submitted to blockchain with transaction hash: %s\n", txHash)
+		}
+	} else {
+		fmt.Printf("DEBUG: No private key provided - this is expected. Frontend handles blockchain submission.\n")
+	}
+
+	responseData := map[string]interface{}{
+		"account_address": req.AccountAddress,
+		"data_hash":       req.DataHash,
+		"blob_name":       blobName,
+		"encrypted":       true,
+	}
+	if txHash != "" {
+		responseData["transaction_hash"] = txHash
+	}
+
+	c.JSON(http.StatusOK, models.Response{
+		Success: true,
+		Message: "Encrypted CSV data received and stored",
+		Data:    responseData,
+	})
+}
+
+// TestIndexerConnection tests the GraphQL indexer connection and returns raw query results
+func (h *Handler) TestIndexerConnection(c *gin.Context) {
+	// This is a debug endpoint to test if the indexer is working
+	datasets, err := h.aptosService.GetMarketplaceDatasets()
+	if err != nil {
+		c.JSON(http.StatusOK, models.Response{
+			Success: false,
+			Error:   fmt.Sprintf("Indexer query failed: %v", err),
+			Data: map[string]interface{}{
+				"error": err.Error(),
+			},
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, models.Response{
+		Success: true,
+		Message: fmt.Sprintf("Indexer connection successful. Found %d datasets", len(datasets)),
+		Data: map[string]interface{}{
+			"dataset_count": len(datasets),
+			"datasets":      datasets,
 		},
 	})
 }

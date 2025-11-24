@@ -64,15 +64,18 @@ func main() {
 
 		// CSV upload
 		api.POST("/data/submit-csv", handler.SubmitCSV)
+		api.POST("/data/submit-encrypted-csv", handler.SubmitEncryptedCSV)
 
 		// Marketplace
 		api.GET("/marketplace/datasets", handler.GetMarketplaceDatasets)
 		api.POST("/marketplace/access-requests", handler.GetAccessRequests)
 		api.POST("/marketplace/request-access", handler.RequestAccess)
-		api.POST("/marketplace/register-user", handler.RegisterUserForMarketplace)
 
 		// CSV data viewing
 		api.POST("/data/get-csv", handler.GetCSVData)
+
+		// Debug endpoint to test indexer
+		api.GET("/debug/test-indexer", handler.TestIndexerConnection)
 	}
 
 	// Start server

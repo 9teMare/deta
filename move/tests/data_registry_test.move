@@ -1,5 +1,6 @@
 #[test_only]
 module datax::data_registry_test {
+    use std::vector;
     use aptos_framework::account;
     use aptos_framework::timestamp;
     use datax::data_registry;
@@ -42,14 +43,15 @@ module datax::data_registry_test {
 
         let data_hash = b"test_hash_123";
         let metadata = b"test_metadata";
+        let empty_encryption = vector::empty<u8>();
 
-        data_registry::submit_data(&user, data_hash, metadata);
+        data_registry::submit_data(&user, data_hash, metadata, empty_encryption, empty_encryption);
 
         // Verify dataset was created
         assert!(data_registry::get_dataset_count(USER1) == 1, 2);
 
         // Verify dataset info
-        let (hash, meta, created_at, is_active) = data_registry::get_dataset(USER1, 0);
+        let (hash, meta, _, _, _created_at, is_active) = data_registry::get_dataset(USER1, 0);
         assert!(hash == data_hash, 3);
         assert!(meta == metadata, 4);
         assert!(is_active == true, 5);
@@ -62,19 +64,20 @@ module datax::data_registry_test {
         let user = setup_user1();
         data_registry::init(&user);
 
-        data_registry::submit_data(&user, b"hash1", b"meta1");
-        data_registry::submit_data(&user, b"hash2", b"meta2");
-        data_registry::submit_data(&user, b"hash3", b"meta3");
+        let empty_encryption = vector::empty<u8>();
+        data_registry::submit_data(&user, b"hash1", b"meta1", empty_encryption, empty_encryption);
+        data_registry::submit_data(&user, b"hash2", b"meta2", empty_encryption, empty_encryption);
+        data_registry::submit_data(&user, b"hash3", b"meta3", empty_encryption, empty_encryption);
 
         assert!(data_registry::get_dataset_count(USER1) == 3, 6);
 
-        let (hash, _, _, _) = data_registry::get_dataset(USER1, 0);
+        let (hash, _, _, _, _, _) = data_registry::get_dataset(USER1, 0);
         assert!(hash == b"hash1", 7);
 
-        let (hash, _, _, _) = data_registry::get_dataset(USER1, 1);
+        let (hash, _, _, _, _, _) = data_registry::get_dataset(USER1, 1);
         assert!(hash == b"hash2", 8);
 
-        let (hash, _, _, _) = data_registry::get_dataset(USER1, 2);
+        let (hash, _, _, _, _, _) = data_registry::get_dataset(USER1, 2);
         assert!(hash == b"hash3", 9);
     }
 
@@ -85,8 +88,9 @@ module datax::data_registry_test {
         let user = setup_user1();
         data_registry::init(&user);
 
-        data_registry::submit_data(&user, b"hash1", b"meta1");
-        data_registry::submit_data(&user, b"hash2", b"meta2");
+        let empty_encryption = vector::empty<u8>();
+        data_registry::submit_data(&user, b"hash1", b"meta1", empty_encryption, empty_encryption);
+        data_registry::submit_data(&user, b"hash2", b"meta2", empty_encryption, empty_encryption);
 
         assert!(data_registry::get_dataset_count(USER1) == 2, 10);
 
@@ -94,7 +98,7 @@ module datax::data_registry_test {
         data_registry::delete_dataset(&user, 0);
 
         // Verify it's marked as inactive
-        let (_, _, _, is_active) = data_registry::get_dataset(USER1, 0);
+        let (_, _, _, _, _, is_active) = data_registry::get_dataset(USER1, 0);
         assert!(is_active == false, 11);
 
         // Count should still be 2 (dataset exists but inactive)
@@ -109,10 +113,14 @@ module datax::data_registry_test {
         let user1 = setup_user1();
         let user2 = setup_user2();
 
+        // Initialize both users' data stores
         data_registry::init(&user1);
-        data_registry::submit_data(&user1, b"hash1", b"meta1");
+        data_registry::init(&user2);
+        
+        let empty_encryption = vector::empty<u8>();
+        data_registry::submit_data(&user1, b"hash1", b"meta1", empty_encryption, empty_encryption);
 
-        // User2 tries to delete user1's dataset - should fail
+        // User2 tries to delete user1's dataset - should fail with abort code 3 (not owner)
         data_registry::delete_dataset(&user2, 0);
     }
 
@@ -123,7 +131,8 @@ module datax::data_registry_test {
         let user = setup_user1();
 
         // Submit data without explicit init - should auto-initialize
-        data_registry::submit_data(&user, b"hash1", b"meta1");
+        let empty_encryption = vector::empty<u8>();
+        data_registry::submit_data(&user, b"hash1", b"meta1", empty_encryption, empty_encryption);
 
         assert!(data_registry::get_dataset_count(USER1) == 1, 13);
     }

@@ -13,6 +13,7 @@ import { useWallet } from "@aptos-labs/wallet-adapter-react";
 import { buildTransaction } from "@/lib/aptos-client";
 import { Upload, FileText, Hash, Send, CheckCircle, AlertCircle } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import { DATAX_MODULE_ADDRESS } from "@/constants";
 
 interface CSVUploadProps {
     account: string;
@@ -117,31 +118,61 @@ export function CSVUpload({ account }: CSVUploadProps) {
             const encoder = new TextEncoder();
             const metadataBytes = encoder.encode(metadata);
 
-            // Build transaction
+            // Encrypt CSV data client-side before sending to backend
+            // Use dynamic import to ensure it only loads in browser
+            const encryptionModule = await import("../lib/encryption");
+            const { encryptCSVData } = encryptionModule;
+            // Properly format CSV with escaping (handle commas, quotes, newlines in cells)
+            const formatCSVRow = (row: string[]): string => {
+                return row
+                    .map((cell) => {
+                        // Escape quotes by doubling them, wrap in quotes if contains comma, quote, or newline
+                        if (cell.includes(",") || cell.includes('"') || cell.includes("\n")) {
+                            return `"${cell.replace(/"/g, '""')}"`;
+                        }
+                        return cell;
+                    })
+                    .join(",");
+            };
+            const csvString = csvData.map(formatCSVRow).join("\n");
+            const { encryptedData, metadata: encryptionMetadata } = await encryptCSVData(csvString, account);
+
+            // Encode encryption metadata for on-chain storage
+            const encryptionMetadataBytes = encoder.encode(encryptionMetadata);
+            const encryptionAlgorithmBytes = encoder.encode("AES-256-GCM");
+
+            // Build transaction with encryption metadata
             const transaction = await buildTransaction(
                 {
-                    moduleAddress: "0x0b133cba97a77b2dee290919e27c72c7d49d8bf5a3294efbd8c40cc38a009eab", // DataX module address
+                    moduleAddress: DATAX_MODULE_ADDRESS, // DataX module address
                     moduleName: "data_registry",
                     functionName: "submit_data",
-                    args: [hashBytes, metadataBytes],
+                    args: [hashBytes, metadataBytes, encryptionMetadataBytes, encryptionAlgorithmBytes],
                 },
                 account
             );
 
-            // Sign and submit transaction
+            // Sign and submit transaction to blockchain (frontend handles this)
             const response = await signAndSubmitTransaction(transaction);
 
-            // Also send to backend for processing (send the actual file)
+            if (!response || !response.hash) {
+                throw new Error("Transaction submission failed - no transaction hash received");
+            }
+
+            console.log("Transaction submitted to blockchain:", response.hash);
+
+            // Send encrypted data to backend (no private key needed - frontend already submitted to blockchain)
             try {
-                if (file) {
-                    await apiClient.submitCSV(account, file, schema, hash);
-                }
+                await apiClient.submitEncryptedCSV(account, encryptedData, encryptionMetadata, schema, hash);
+                console.log("Encrypted data stored in backend successfully");
             } catch (backendError) {
                 console.warn("Backend submission failed:", backendError);
                 // Transaction is already on-chain, so this is not critical
+                // But we should still show a warning
+                toast.warning("Data submitted to blockchain, but backend storage failed. Transaction: " + response.hash);
             }
 
-            toast.success(`Data submitted! Transaction: ${response.hash}`);
+            toast.success(`Data submitted successfully! Transaction: ${response.hash}`);
 
             // Reset
             setFile(null);
@@ -164,23 +195,25 @@ export function CSVUpload({ account }: CSVUploadProps) {
                     <Upload className="w-5 h-5 text-blue-400" />
                     Upload CSV Data
                 </CardTitle>
-                <CardDescription>
-                    Upload a CSV file to automatically generate a hash and submit it to the blockchain.
-                </CardDescription>
+                <CardDescription>Upload a CSV file to automatically generate a hash and submit it to the blockchain.</CardDescription>
             </CardHeader>
             <CardContent className="space-y-6">
                 <div className="relative group">
-                    <div className={`border-2 border-dashed rounded-xl p-8 text-center transition-all ${file ? 'border-blue-500/50 bg-blue-500/5' : 'border-white/10 hover:border-white/20 hover:bg-white/5'}`}>
-                        <Input 
-                            id="csv-file" 
-                            type="file" 
-                            accept=".csv" 
-                            ref={fileInputRef} 
-                            onChange={handleFileSelect} 
+                    <div
+                        className={`border-2 border-dashed rounded-xl p-8 text-center transition-all ${
+                            file ? "border-blue-500/50 bg-blue-500/5" : "border-white/10 hover:border-white/20 hover:bg-white/5"
+                        }`}
+                    >
+                        <Input
+                            id="csv-file"
+                            type="file"
+                            accept=".csv"
+                            ref={fileInputRef}
+                            onChange={handleFileSelect}
                             disabled={loading}
-                            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10" 
+                            className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
                         />
-                        
+
                         <div className="flex flex-col items-center justify-center gap-3">
                             {file ? (
                                 <>
@@ -221,25 +254,33 @@ export function CSVUpload({ account }: CSVUploadProps) {
 
                 <AnimatePresence>
                     {schema && (
-                        <motion.div 
+                        <motion.div
                             initial={{ opacity: 0, height: 0 }}
                             animate={{ opacity: 1, height: "auto" }}
                             exit={{ opacity: 0, height: 0 }}
                             className="space-y-6"
                         >
                             {dataHash && (
-                                <div className={`rounded-lg p-4 border ${hashExists ? 'bg-red-500/10 border-red-500/30' : 'bg-black/20 border-white/5'}`}>
+                                <div
+                                    className={`rounded-lg p-4 border ${
+                                        hashExists ? "bg-red-500/10 border-red-500/30" : "bg-black/20 border-white/5"
+                                    }`}
+                                >
                                     <Label className="text-xs text-gray-500 uppercase tracking-wider font-semibold mb-2 block flex items-center gap-2">
                                         <Hash className="w-3 h-3" /> Data Hash (Generated)
                                         {checkingHash && <span className="text-blue-400 ml-auto">Checking...</span>}
                                     </Label>
                                     <div className="flex items-center gap-2">
-                                        <code className={`flex-1 bg-black/40 p-2 rounded text-xs font-mono break-all border border-white/5 ${hashExists ? 'text-red-400' : 'text-green-400'}`}>
+                                        <code
+                                            className={`flex-1 bg-black/40 p-2 rounded text-xs font-mono break-all border border-white/5 ${
+                                                hashExists ? "text-red-400" : "text-green-400"
+                                            }`}
+                                        >
                                             {dataHash}
                                         </code>
-                                        <Button 
-                                            size="sm" 
-                                            variant="ghost" 
+                                        <Button
+                                            size="sm"
+                                            variant="ghost"
                                             className="h-8 w-8 p-0"
                                             onClick={() => {
                                                 navigator.clipboard.writeText(dataHash);
@@ -275,7 +316,10 @@ export function CSVUpload({ account }: CSVUploadProps) {
                                         </div>
                                         <div className="space-y-2 max-h-40 overflow-y-auto pr-2 custom-scrollbar">
                                             {schema.columns.map((col, idx) => (
-                                                <div key={idx} className="text-sm flex justify-between items-center p-2 bg-white/5 rounded hover:bg-white/10 transition-colors">
+                                                <div
+                                                    key={idx}
+                                                    className="text-sm flex justify-between items-center p-2 bg-white/5 rounded hover:bg-white/10 transition-colors"
+                                                >
                                                     <span className="font-medium text-gray-300">{col.name}</span>
                                                     <span className="text-xs text-gray-500 font-mono">{col.type}</span>
                                                 </div>
@@ -285,7 +329,9 @@ export function CSVUpload({ account }: CSVUploadProps) {
                                 </div>
 
                                 <div>
-                                    <Label htmlFor="description" className="text-gray-300 mb-2 block">Description (Optional)</Label>
+                                    <Label htmlFor="description" className="text-gray-300 mb-2 block">
+                                        Description (Optional)
+                                    </Label>
                                     <Textarea
                                         id="description"
                                         placeholder="Describe your dataset..."
@@ -313,7 +359,10 @@ export function CSVUpload({ account }: CSVUploadProps) {
                                             {schema.preview.slice(1, 6).map((row, rowIdx) => (
                                                 <tr key={rowIdx} className="hover:bg-white/5 transition-colors">
                                                     {row.map((cell, cellIdx) => (
-                                                        <td key={cellIdx} className="px-4 py-2 text-gray-400 whitespace-nowrap max-w-[200px] truncate">
+                                                        <td
+                                                            key={cellIdx}
+                                                            className="px-4 py-2 text-gray-400 whitespace-nowrap max-w-[200px] truncate"
+                                                        >
                                                             {cell}
                                                         </td>
                                                     ))}
@@ -322,15 +371,17 @@ export function CSVUpload({ account }: CSVUploadProps) {
                                         </tbody>
                                     </table>
                                 </div>
-                                <p className="text-xs text-gray-500 mt-2 text-right">
-                                    Showing 5 of {schema.rowCount} rows
-                                </p>
+                                <p className="text-xs text-gray-500 mt-2 text-right">Showing 5 of {schema.rowCount} rows</p>
                             </div>
 
-                            <Button 
-                                onClick={handleSubmit} 
-                                disabled={uploading || hashExists || checkingHash} 
-                                className={`w-full border-0 h-12 text-lg shadow-lg ${hashExists ? 'bg-gray-600 cursor-not-allowed' : 'bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 shadow-blue-500/20'} text-white`}
+                            <Button
+                                onClick={handleSubmit}
+                                disabled={uploading || hashExists || checkingHash}
+                                className={`w-full border-0 h-12 text-lg shadow-lg ${
+                                    hashExists
+                                        ? "bg-gray-600 cursor-not-allowed"
+                                        : "bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 shadow-blue-500/20"
+                                } text-white`}
                             >
                                 {checkingHash ? (
                                     <>

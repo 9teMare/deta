@@ -10,8 +10,8 @@
 ## Deployed Modules
 
 1. **data_registry** - `0x0b133cba97a77b2dee290919e27c72c7d49d8bf5a3294efbd8c40cc38a009eab::data_registry`
-2. **AccessControl** - `0x0b133cba97a77b2dee290919e27c72c7d49d8bf5a3294efbd8c40cc38a009eab::AccessControl`
-3. **UserVault** - `0x0b133cba97a77b2dee290919e27c72c7d49d8bf5a3294efbd8c40cc38a009eab::UserVault`
+2. **access_control** - `0x0b133cba97a77b2dee290919e27c72c7d49d8bf5a3294efbd8c40cc38a009eab::access_control`
+3. **user_vault** - `0x0b133cba97a77b2dee290919e27c72c7d49d8bf5a3294efbd8c40cc38a009eab::user_vault`
 4. **data_token** - `0x0b133cba97a77b2dee290919e27c72c7d49d8bf5a3294efbd8c40cc38a009eab::data_token`
 
 ## Configuration

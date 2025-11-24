@@ -11,6 +11,7 @@ import { useWallet } from "@aptos-labs/wallet-adapter-react";
 import { buildTransaction } from "@/lib/aptos-client";
 import { Shield, UserCheck, UserX, Search, Clock, RefreshCw, Key } from "lucide-react";
 import { motion } from "framer-motion";
+import { DATAX_MODULE_ADDRESS } from "@/constants";
 
 interface AccessControlProps {
     account: string;
@@ -83,8 +84,8 @@ export function AccessControl({ account }: AccessControlProps) {
 
             const transaction = await buildTransaction(
                 {
-                    moduleAddress: "0x0b133cba97a77b2dee290919e27c72c7d49d8bf5a3294efbd8c40cc38a009eab",
-                    moduleName: "AccessControl",
+                    moduleAddress: DATAX_MODULE_ADDRESS,
+                    moduleName: "access_control",
                     functionName: "grant_access",
                     args: [finalDatasetId, finalRequester, expiresAtTimestamp],
                 },
@@ -121,8 +122,8 @@ export function AccessControl({ account }: AccessControlProps) {
         try {
             const transaction = await buildTransaction(
                 {
-                    moduleAddress: "0x0b133cba97a77b2dee290919e27c72c7d49d8bf5a3294efbd8c40cc38a009eab",
-                    moduleName: "AccessControl",
+                    moduleAddress: DATAX_MODULE_ADDRESS,
+                    moduleName: "access_control",
                     functionName: "revoke_access",
                     args: [parseInt(datasetId), requester],
                 },
@@ -171,10 +172,10 @@ export function AccessControl({ account }: AccessControlProps) {
                             </CardTitle>
                             <CardDescription>Review and grant access to pending requests</CardDescription>
                         </div>
-                        <Button 
-                            onClick={loadAccessRequests} 
-                            disabled={loadingRequests} 
-                            variant="outline" 
+                        <Button
+                            onClick={loadAccessRequests}
+                            disabled={loadingRequests}
+                            variant="outline"
                             size="sm"
                             className="bg-white/5 border-white/10 hover:bg-white/10"
                         >
@@ -191,7 +192,7 @@ export function AccessControl({ account }: AccessControlProps) {
                     ) : (
                         <div className="space-y-3">
                             {accessRequests.map((request, idx) => (
-                                <motion.div 
+                                <motion.div
                                     key={idx}
                                     initial={{ opacity: 0, y: 10 }}
                                     animate={{ opacity: 1, y: 0 }}
@@ -246,7 +247,9 @@ export function AccessControl({ account }: AccessControlProps) {
                     </CardHeader>
                     <CardContent className="space-y-4">
                         <div>
-                            <Label htmlFor="grantDatasetId" className="text-gray-300">Dataset ID</Label>
+                            <Label htmlFor="grantDatasetId" className="text-gray-300">
+                                Dataset ID
+                            </Label>
                             <Input
                                 id="grantDatasetId"
                                 type="number"
@@ -257,7 +260,9 @@ export function AccessControl({ account }: AccessControlProps) {
                             />
                         </div>
                         <div>
-                            <Label htmlFor="requester" className="text-gray-300">Requester Address</Label>
+                            <Label htmlFor="requester" className="text-gray-300">
+                                Requester Address
+                            </Label>
                             <Input
                                 id="requester"
                                 placeholder="0x..."
@@ -267,13 +272,15 @@ export function AccessControl({ account }: AccessControlProps) {
                             />
                         </div>
                         <div>
-                            <Label htmlFor="expiresAt" className="text-gray-300">Expires At</Label>
-                            <Input 
-                                id="expiresAt" 
-                                type="datetime-local" 
-                                value={expiresAt} 
+                            <Label htmlFor="expiresAt" className="text-gray-300">
+                                Expires At
+                            </Label>
+                            <Input
+                                id="expiresAt"
+                                type="datetime-local"
+                                value={expiresAt}
                                 onChange={(e) => setExpiresAt(e.target.value)}
-                                className="bg-black/20 border-white/10 mt-1" 
+                                className="bg-black/20 border-white/10 mt-1"
                             />
                         </div>
                         <Button
@@ -299,7 +306,9 @@ export function AccessControl({ account }: AccessControlProps) {
                     </CardHeader>
                     <CardContent className="space-y-4">
                         <div>
-                            <Label htmlFor="revokeDatasetId" className="text-gray-300">Dataset ID</Label>
+                            <Label htmlFor="revokeDatasetId" className="text-gray-300">
+                                Dataset ID
+                            </Label>
                             <Input
                                 id="revokeDatasetId"
                                 type="number"
@@ -310,7 +319,9 @@ export function AccessControl({ account }: AccessControlProps) {
                             />
                         </div>
                         <div>
-                            <Label htmlFor="revokeRequester" className="text-gray-300">Requester Address</Label>
+                            <Label htmlFor="revokeRequester" className="text-gray-300">
+                                Requester Address
+                            </Label>
                             <Input
                                 id="revokeRequester"
                                 placeholder="0x..."
@@ -319,11 +330,13 @@ export function AccessControl({ account }: AccessControlProps) {
                                 className="bg-black/20 border-white/10 font-mono mt-1"
                             />
                         </div>
-                        <div className="pt-[72px]"> {/* Spacer to align buttons */}
-                            <Button 
-                                onClick={handleRevokeAccess} 
-                                disabled={loading} 
-                                variant="destructive" 
+                        <div className="pt-[72px]">
+                            {" "}
+                            {/* Spacer to align buttons */}
+                            <Button
+                                onClick={handleRevokeAccess}
+                                disabled={loading}
+                                variant="destructive"
                                 className="w-full bg-red-500/20 hover:bg-red-500/30 text-red-400 border border-red-500/20"
                             >
                                 {loading ? "Revoking..." : "Revoke Access"}
@@ -344,7 +357,9 @@ export function AccessControl({ account }: AccessControlProps) {
                 <CardContent className="space-y-4">
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                         <div>
-                            <Label htmlFor="checkOwner" className="text-gray-300">Owner Address</Label>
+                            <Label htmlFor="checkOwner" className="text-gray-300">
+                                Owner Address
+                            </Label>
                             <Input
                                 id="checkOwner"
                                 placeholder="0x..."
@@ -354,7 +369,9 @@ export function AccessControl({ account }: AccessControlProps) {
                             />
                         </div>
                         <div>
-                            <Label htmlFor="checkDatasetId" className="text-gray-300">Dataset ID</Label>
+                            <Label htmlFor="checkDatasetId" className="text-gray-300">
+                                Dataset ID
+                            </Label>
                             <Input
                                 id="checkDatasetId"
                                 type="number"
@@ -365,7 +382,9 @@ export function AccessControl({ account }: AccessControlProps) {
                             />
                         </div>
                         <div>
-                            <Label htmlFor="checkRequester" className="text-gray-300">Requester Address</Label>
+                            <Label htmlFor="checkRequester" className="text-gray-300">
+                                Requester Address
+                            </Label>
                             <Input
                                 id="checkRequester"
                                 placeholder="0x..."
@@ -375,25 +394,27 @@ export function AccessControl({ account }: AccessControlProps) {
                             />
                         </div>
                     </div>
-                    
+
                     <Button onClick={handleCheckAccess} disabled={loading} className="w-full bg-blue-600 hover:bg-blue-500">
                         {loading ? "Checking..." : "Check Access"}
                     </Button>
-                    
+
                     {accessResult !== null && (
-                        <motion.div 
+                        <motion.div
                             initial={{ opacity: 0, scale: 0.95 }}
                             animate={{ opacity: 1, scale: 1 }}
                             className={`p-4 rounded-lg border ${
-                                accessResult 
-                                    ? "bg-green-500/10 border-green-500/20 text-green-400" 
-                                    : "bg-red-500/10 border-red-500/20 text-red-400"
+                                accessResult ? "bg-green-500/10 border-green-500/20 text-green-400" : "bg-red-500/10 border-red-500/20 text-red-400"
                             } flex items-center justify-center gap-2 font-medium`}
                         >
                             {accessResult ? (
-                                <><UserCheck className="w-5 h-5" /> Access Granted</>
+                                <>
+                                    <UserCheck className="w-5 h-5" /> Access Granted
+                                </>
                             ) : (
-                                <><UserX className="w-5 h-5" /> Access Denied</>
+                                <>
+                                    <UserX className="w-5 h-5" /> Access Denied
+                                </>
                             )}
                         </motion.div>
                     )}

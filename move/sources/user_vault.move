@@ -1,4 +1,4 @@
-module aptos_data_network::UserVault {
+module datax::user_vault {
     use std::signer;
     use std::vector;
 

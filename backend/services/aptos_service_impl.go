@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -243,8 +244,15 @@ func (s *AptosServiceImpl) InitializeUser(privateKeyHex string) (string, error) 
 	)
 }
 
-// Submit data
+// Submit data (legacy - uses empty encryption fields)
 func (s *AptosServiceImpl) SubmitData(privateKeyHex string, dataHash string, metadata string) (string, error) {
+	emptyEncryption := ""
+	emptyAlgorithm := ""
+	return s.SubmitDataWithEncryption(privateKeyHex, dataHash, metadata, emptyEncryption, emptyAlgorithm)
+}
+
+// SubmitDataWithEncryption submits data with encryption metadata
+func (s *AptosServiceImpl) SubmitDataWithEncryption(privateKeyHex string, dataHash string, metadata string, encryptionMetadata string, encryptionAlgorithm string) (string, error) {
 	account, err := getAccountFromPrivateKey(privateKeyHex)
 	if err != nil {
 		return "", err
@@ -257,13 +265,15 @@ func (s *AptosServiceImpl) SubmitData(privateKeyHex string, dataHash string, met
 
 	dataHashBytes := []byte(dataHash)
 	metadataBytes := []byte(metadata)
+	encryptionMetadataBytes := []byte(encryptionMetadata)
+	encryptionAlgorithmBytes := []byte(encryptionAlgorithm)
 
 	return s.submitTransaction(
 		account,
 		moduleAddr,
 		"data_registry",
 		"submit_data",
-		[]interface{}{dataHashBytes, metadataBytes},
+		[]interface{}{dataHashBytes, metadataBytes, encryptionMetadataBytes, encryptionAlgorithmBytes},
 	)
 }
 
@@ -823,14 +833,18 @@ func (s *AptosServiceImpl) queryUsersFromGraphQLIndexer(eventType string) ([]str
 	// 	}
 	// }`, eventType)
 	graphQLQuery := `query MyQuery {
-		datax_marketplace {
-			user
+		datasets {
 			data_hash
 			dataset_id
+			owner
+			is_active
 			metadata
+			created_at
+			encryption_metadata
+			encryption_algorithm
 		}
-		}
-		`
+	}
+	`
 
 	// Prepare GraphQL request
 	requestBody := map[string]interface{}{
@@ -912,7 +926,7 @@ func (s *AptosServiceImpl) queryUsersFromGraphQLIndexer(eventType string) ([]str
 
 		fmt.Printf("DEBUG: GraphQL response received (attempt %d), status: %d\n", attempt+1, resp.StatusCode)
 
-		// Parse response dynamically to handle both events and datax_marketplace queries
+		// Parse response dynamically to handle both events and datasets queries
 		var rawResponse map[string]interface{}
 		if err := json.Unmarshal(bodyBytes, &rawResponse); err != nil {
 			lastErr = fmt.Errorf("failed to decode GraphQL response: %w", err)
@@ -944,13 +958,16 @@ func (s *AptosServiceImpl) queryUsersFromGraphQLIndexer(eventType string) ([]str
 			continue
 		}
 
-		// Try to extract users from datax_marketplace (if that's what was queried)
+		// Try to extract users from datasets (if that's what was queried)
 		userSet := make(map[string]bool)
-		if marketplaceData, ok := data["datax_marketplace"].([]interface{}); ok {
-			fmt.Printf("DEBUG: Found datax_marketplace data, extracting users\n")
-			for _, entry := range marketplaceData {
+		if datasetsData, ok := data["datasets"].([]interface{}); ok {
+			fmt.Printf("DEBUG: Found datasets data, extracting users\n")
+			for _, entry := range datasetsData {
 				if entryMap, ok := entry.(map[string]interface{}); ok {
-					if user, ok := entryMap["user"].(string); ok && user != "" {
+					// Try both "owner" (new schema) and "user" (old schema) for backward compatibility
+					if owner, ok := entryMap["owner"].(string); ok && owner != "" {
+						userSet[owner] = true
+					} else if user, ok := entryMap["user"].(string); ok && user != "" {
 						userSet[user] = true
 					}
 				}
@@ -1200,7 +1217,7 @@ func (s *AptosServiceImpl) discoverUsersFromEventsTable() ([]string, error) {
 	return users, nil
 }
 
-// queryMarketplaceFromGeomiIndexer queries the Geomi indexer's datax_marketplace table
+// queryMarketplaceFromGeomiIndexer queries the indexer's datasets table
 func (s *AptosServiceImpl) queryMarketplaceFromGeomiIndexer() ([]interface{}, error) {
 	if s.graphqlClient == nil {
 		return nil, fmt.Errorf("GraphQL client not initialized")
@@ -1215,28 +1232,108 @@ func (s *AptosServiceImpl) queryMarketplaceFromGeomiIndexer() ([]interface{}, er
 	fmt.Printf("DEBUG: API key present: %v (length: %d chars)\n", apiKey != "", len(apiKey))
 
 	// Use interface{} for dataset_id since it might be string or number
+	// Try querying with and without filters to see what works
 	var query struct {
-		DataxMarketplace []struct {
-			User      string      `graphql:"user"`
-			DataHash  string      `graphql:"data_hash"`
-			DatasetID interface{} `graphql:"dataset_id"`
-			Metadata  string      `graphql:"metadata"`
-		} `graphql:"datax_marketplace"`
+		Datasets []struct {
+			Owner               string      `graphql:"owner"`
+			DataHash            string      `graphql:"data_hash"`
+			DatasetID           interface{} `graphql:"dataset_id"`
+			IsActive            bool        `graphql:"is_active"`
+			Metadata            string      `graphql:"metadata"`
+			CreatedAt           uint64      `graphql:"created_at"`
+			EncryptionMetadata  string      `graphql:"encryption_metadata"`
+			EncryptionAlgorithm string      `graphql:"encryption_algorithm"`
+		} `graphql:"datasets"`
 	}
+
+	// Try querying all datasets first (no filters)
+	// If indexer supports it, we can add filters later like: `graphql:"datasets(where: {is_active: {_eq: true}})"`
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	fmt.Printf("DEBUG: Executing GraphQL query for datasets...\n")
+
+	// First, try a raw HTTP query to see the actual response
+	rawQuery := `query MyQuery {
+		datasets {
+			data_hash
+			dataset_id
+			owner
+			is_active
+			metadata
+			created_at
+			encryption_metadata
+			encryption_algorithm
+		}
+	}`
+
+	// Try raw HTTP query first for debugging
+	requestBody := map[string]interface{}{
+		"query": rawQuery,
+	}
+	jsonBody, _ := json.Marshal(requestBody)
+
+	req, _ := http.NewRequestWithContext(ctx, "POST", config.AppConfig.AptosIndexerURL, bytes.NewReader(jsonBody))
+	req.Header.Set("Content-Type", "application/json")
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+
+	rawResp, rawErr := s.httpClient.Do(req)
+	if rawErr == nil && rawResp != nil {
+		rawBodyBytes, _ := io.ReadAll(rawResp.Body)
+		rawResp.Body.Close()
+		previewLen := 1000
+		if len(rawBodyBytes) < previewLen {
+			previewLen = len(rawBodyBytes)
+		}
+		fmt.Printf("DEBUG: Raw GraphQL response (first %d chars): %s\n", previewLen, string(rawBodyBytes[:previewLen]))
+
+		// Try to parse the raw response
+		var rawResponse map[string]interface{}
+		if json.Unmarshal(rawBodyBytes, &rawResponse) == nil {
+			if errors, ok := rawResponse["errors"].([]interface{}); ok && len(errors) > 0 {
+				fmt.Printf("DEBUG: GraphQL errors in raw response: %+v\n", errors)
+			}
+			if data, ok := rawResponse["data"].(map[string]interface{}); ok {
+				if datasets, ok := data["datasets"].([]interface{}); ok {
+					fmt.Printf("DEBUG: Raw response found %d datasets\n", len(datasets))
+				} else {
+					fmt.Printf("DEBUG: Raw response data structure: %+v\n", data)
+				}
+			}
+		}
+	}
+
+	// Now try the GraphQL client query
 	if err := s.graphqlClient.Query(ctx, &query, nil); err != nil {
 		fmt.Printf("DEBUG: GraphQL client query error: %v\n", err)
+		fmt.Printf("DEBUG: GraphQL query error details - type: %T, error: %+v\n", err, err)
 		return nil, fmt.Errorf("GraphQL query failed: %w", err)
 	}
 
-	fmt.Printf("DEBUG: GraphQL query succeeded, found %d entries in datax_marketplace\n", len(query.DataxMarketplace))
+	fmt.Printf("DEBUG: GraphQL query succeeded, found %d entries in datasets\n", len(query.Datasets))
+
+	// Log first few entries for debugging
+	if len(query.Datasets) > 0 {
+		for i, ds := range query.Datasets {
+			if i >= 3 {
+				break
+			}
+			fmt.Printf("DEBUG: Dataset %d: owner=%s, data_hash=%s, dataset_id=%v, is_active=%v\n",
+				i, ds.Owner, ds.DataHash, ds.DatasetID, ds.IsActive)
+		}
+	} else {
+		fmt.Printf("DEBUG: WARNING - GraphQL query returned 0 datasets. This could mean:\n")
+		fmt.Printf("  1. No datasets have been submitted yet\n")
+		fmt.Printf("  2. Indexer is still syncing (may take a few seconds after transaction)\n")
+		fmt.Printf("  3. Indexer query might need filters or different structure\n")
+	}
 
 	// Build initial dataset list from indexer
-	indexerDatasets := make([]map[string]interface{}, 0, len(query.DataxMarketplace))
-	for _, entry := range query.DataxMarketplace {
+	indexerDatasets := make([]map[string]interface{}, 0, len(query.Datasets))
+	for _, entry := range query.Datasets {
 		// Parse dataset_id which might be string or number
 		var datasetID uint64
 		switch v := entry.DatasetID.(type) {
@@ -1259,19 +1356,22 @@ func (s *AptosServiceImpl) queryMarketplaceFromGeomiIndexer() ([]interface{}, er
 		}
 
 		indexerDatasets = append(indexerDatasets, map[string]interface{}{
-			"id":         datasetID,
-			"owner":      entry.User,
-			"data_hash":  entry.DataHash,
-			"metadata":   entry.Metadata,
-			"created_at": 0,
+			"id":                   datasetID,
+			"owner":                entry.Owner,
+			"data_hash":            entry.DataHash,
+			"metadata":             entry.Metadata,
+			"created_at":           entry.CreatedAt,
+			"is_active":            entry.IsActive,
+			"encryption_metadata":  entry.EncryptionMetadata,
+			"encryption_algorithm": entry.EncryptionAlgorithm,
 		})
 	}
 
 	fmt.Printf("DEBUG: Converted %d marketplace entries from indexer\n", len(indexerDatasets))
 
-	// CRITICAL: Verify is_active status from blockchain for each dataset
-	// The indexer only tracks DataSubmit events, not deletions
-	// So we must check the blockchain to see if datasets are still active
+	// Verify is_active status from blockchain for each dataset
+	// Even though the indexer now provides is_active, we verify from blockchain for accuracy
+	// This ensures we have the most up-to-date status
 	fmt.Printf("DEBUG: Verifying is_active status from blockchain for %d datasets...\n", len(indexerDatasets))
 
 	// Use concurrent worker pool to avoid timeouts (max 3 concurrent)
@@ -1344,7 +1444,7 @@ func (s *AptosServiceImpl) queryMarketplaceFromGeomiIndexer() ([]interface{}, er
 }
 
 // GetMarketplaceDatasets returns all datasets from the marketplace
-// Uses Geomi indexer to fetch data from datax_marketplace table, with blockchain fallback
+// Uses indexer to fetch data from datasets table, with blockchain fallback
 // It discovers users from chain events and queries their DataStore resources to get all datasets
 // This approach fetches data directly from on-chain state, not from memory
 func (s *AptosServiceImpl) GetMarketplaceDatasets() ([]interface{}, error) {
@@ -2018,9 +2118,9 @@ func (s *AptosServiceImpl) checkDataHashFromIndexer(dataHash string) (bool, erro
 	}
 
 	var query struct {
-		DataxMarketplace []struct {
+		Datasets []struct {
 			DataHash string `graphql:"data_hash"`
-		} `graphql:"datax_marketplace(where: {data_hash: {_eq: $data_hash}})"`
+		} `graphql:"datasets(where: {data_hash: {_eq: $data_hash}})"`
 	}
 
 	variables := map[string]interface{}{
@@ -2034,5 +2134,5 @@ func (s *AptosServiceImpl) checkDataHashFromIndexer(dataHash string) (bool, erro
 		return false, err
 	}
 
-	return len(query.DataxMarketplace) > 0, nil
+	return len(query.Datasets) > 0, nil
 }

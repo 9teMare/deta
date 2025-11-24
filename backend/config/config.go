@@ -35,17 +35,17 @@ func LoadConfig() error {
 	AppConfig = &Config{
 		Port:               getEnv("PORT", "8080"),
 		AptosNodeURL:       getEnv("APTOS_NODE_URL", "https://fullnode.testnet.aptoslabs.com"),
-		AptosIndexerURL:    getEnv("APTOS_INDEXER_URL", "https://api.testnet.aptoslabs.com/v1/graphql"),
-		AptosIndexerAPIKey: getEnv("APTOS_INDEXER_API_KEY", "aptoslabs_gFwzfgw2qNK_PoVDshwNdcPq8gKAn9MMwjc3nydopPU5k"),
+		AptosIndexerURL:    getEnv("APTOS_INDEXER_URL", ""),
+		AptosIndexerAPIKey: getEnv("APTOS_INDEXER_API_KEY", ""),
 		UseIndexer:         getEnvAsBool("USE_INDEXER", "true"), // Enable indexer by default
-		DataXModuleAddr:    getEnv("DATAX_MODULE_ADDR", "0x0b133cba97a77b2dee290919e27c72c7d49d8bf5a3294efbd8c40cc38a009eab"),
-		NetworkModuleAddr:  getEnv("NETWORK_MODULE_ADDR", "0x0b133cba97a77b2dee290919e27c72c7d49d8bf5a3294efbd8c40cc38a009eab"),
+		DataXModuleAddr:    getEnv("DATAX_MODULE_ADDR", "0xd5adda38d5e67d6086f9451e75137b684d41c1639a6e0597e39025d7f72f0f0a"),
+		NetworkModuleAddr:  getEnv("NETWORK_MODULE_ADDR", "0xd5adda38d5e67d6086f9451e75137b684d41c1639a6e0597e39025d7f72f0f0a"),
 		ChainID:            uint8(getEnvAsInt("CHAIN_ID", "2")), // 2 for testnet
 		SupabaseS3URL:      getEnv("SUPABASE_S3_URL", ""),
 		SupabaseKey:        getEnv("SUPABASE_KEY", ""),
-		SupabaseBucket:     getEnv("SUPABASE_BUCKET", "csv-data"), // Supabase storage bucket name
-		SupabaseAccessKey:  getEnv("SUPABASE_ACCESS_KEY", ""),     // S3 access key (if using S3 SDK)
-		SupabaseSecretKey:  getEnv("SUPABASE_SECRET_KEY", ""),     // S3 secret key (if using S3 SDK)
+		SupabaseBucket:     getEnv("SUPABASE_BUCKET", "datax-csv"), // Supabase storage bucket name
+		SupabaseAccessKey:  getEnv("SUPABASE_ACCESS_KEY", ""),      // S3 access key (if using S3 SDK)
+		SupabaseSecretKey:  getEnv("SUPABASE_SECRET_KEY", ""),      // S3 secret key (if using S3 SDK)
 		ShelbyRPCURL:       getEnv("SHELBY_RPC_URL", ""),
 		ShelbyAccountKey:   getEnv("SHELBY_ACCOUNT_KEY", ""),
 	}

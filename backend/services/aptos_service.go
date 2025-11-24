@@ -6,6 +6,7 @@ package services
 type AptosService interface {
 	InitializeUser(privateKeyHex string) (string, error)
 	SubmitData(privateKeyHex string, dataHash string, metadata string) (string, error)
+	SubmitDataWithEncryption(privateKeyHex string, dataHash string, metadata string, encryptionMetadata string, encryptionAlgorithm string) (string, error)
 	DeleteDataset(privateKeyHex string, datasetID uint64) (string, error)
 	GrantAccess(privateKeyHex string, datasetID uint64, requester string, expiresAt uint64) (string, error)
 	RevokeAccess(privateKeyHex string, datasetID uint64, requester string) (string, error)

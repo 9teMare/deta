@@ -1,4 +1,4 @@
-module aptos_data_network::AccessControl {
+module datax::access_control {
     use std::vector;
     use std::signer;
 
