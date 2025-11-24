@@ -9,8 +9,10 @@ import { Switch } from "@/components/ui/switch";
 import { toast } from "sonner";
 import { apiClient } from "@/lib/api";
 import { useWallet } from "@aptos-labs/wallet-adapter-react";
+import { buildTransaction } from "@/lib/aptos-client";
 import Link from "next/link";
-import { Database, Users, Calendar, FileText, ExternalLink, Search, Filter } from "lucide-react";
+import { Database, Users, Calendar, FileText, ExternalLink, Search, Filter, DollarSign } from "lucide-react";
+import { createAccessRequest, getApprovedRequests, confirmPayment, checkRequestExists, type AccessRequest } from "@/lib/supabase";
 
 interface MarketplaceDataset {
     id: number;
@@ -33,8 +35,10 @@ export default function MarketplacePage() {
     const [viewingCSV, setViewingCSV] = useState<{ dataset: MarketplaceDataset; data: string[][] } | null>(null);
     const [loadingCSV, setLoadingCSV] = useState(false);
     const [accessChecks, setAccessChecks] = useState<Map<string, boolean>>(new Map());
-    const [showOnlyOthers, setShowOnlyOthers] = useState(true); // Filter to show only other users' datasets
+    const [showOnlyOthers, setShowOnlyOthers] = useState(true);
     const [searchQuery, setSearchQuery] = useState("");
+    const [approvedRequests, setApprovedRequests] = useState<AccessRequest[]>([]);
+    const [payingFor, setPayingFor] = useState<string | null>(null);
 
     const loadMarketplaceDatasets = async () => {
         setLoading(true);
@@ -52,9 +56,21 @@ export default function MarketplacePage() {
         }
     };
 
+    const loadApprovedRequests = async () => {
+        if (!connected || !account) return;
+        
+        const requests = await getApprovedRequests(account.address.toString());
+        setApprovedRequests(requests);
+    };
+
     useEffect(() => {
         loadMarketplaceDatasets();
     }, []);
+
+    useEffect(() => {
+        loadApprovedRequests();
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [connected, account]);
 
     // Check access for all datasets when account changes
     useEffect(() => {
@@ -115,19 +131,107 @@ export default function MarketplacePage() {
 
         setRequestingAccess(true);
         try {
-            await apiClient.requestAccess(
+            // Check if request already exists
+            const existingRequest = await checkRequestExists(
                 dataset.owner,
-                dataset.id,
                 account.address.toString(),
+                dataset.id
+            );
+
+            if (existingRequest) {
+                if (existingRequest.status === 'pending') {
+                    toast.info("You already have a pending request for this dataset");
+                } else if (existingRequest.status === 'approved') {
+                    toast.info("Your request was approved! Pay 0.1 APT to access the data.");
+                } else if (existingRequest.status === 'paid') {
+                    toast.info("You already paid for this dataset. Waiting for owner to grant access.");
+                } else if (existingRequest.status === 'denied') {
+                    toast.error("Your request was denied by the owner");
+                }
+                return;
+            }
+
+            // Create new access request in database
+            const request = await createAccessRequest(
+                dataset.owner,
+                account.address.toString(),
+                dataset.id,
                 `Requesting access to dataset #${dataset.id}`
             );
-            toast.success("Access request submitted successfully! The dataset owner will be notified.");
-            // Refresh access checks
-            await checkAccessForDataset(dataset);
+
+            if (request) {
+                toast.success("Access request submitted! The dataset owner will review it.");
+            } else {
+                toast.error("Failed to create access request");
+            }
         } catch (error: any) {
             toast.error(error.message || "Failed to request access");
         } finally {
             setRequestingAccess(false);
+        }
+    };
+
+    const handlePayForApprovedRequest = async (request: AccessRequest) => {
+        if (!connected || !account || !signAndSubmitTransaction) {
+            toast.error("Please connect your wallet first");
+            return;
+        }
+
+        const ACCESS_PRICE_OCTAS = 10000000; // 0.1 APT
+        const requestKey = `${request.owner_address}-${request.dataset_id}`;
+        
+        setPayingFor(requestKey);
+        try {
+            // Step 1: Transfer APT payment to dataset owner
+            const paymentTransaction = {
+                data: {
+                    function: "0x1::aptos_account::transfer",
+                    functionArguments: [request.owner_address, ACCESS_PRICE_OCTAS],
+                },
+            };
+
+            const paymentResponse = await signAndSubmitTransaction(paymentTransaction);
+            toast.success(`Payment sent! Transaction: ${paymentResponse.hash}`);
+
+            // Step 2: Update database with payment confirmation
+            const confirmed = await confirmPayment(
+                request.owner_address,
+                request.requester_address,
+                request.dataset_id,
+                paymentResponse.hash
+            );
+
+            if (!confirmed) {
+                toast.error("Failed to confirm payment in database");
+                return;
+            }
+
+            // Step 3: Trigger on-chain grant access via Aptos
+            try {
+                const grantTransaction = await buildTransaction(
+                    {
+                        moduleAddress: "0x0b133cba97a77b2dee290919e27c72c7d49d8bf5a3294efbd8c40cc38a009eab",
+                        moduleName: "AccessControl",
+                        functionName: "grant_access",
+                        args: [request.dataset_id, request.requester_address, Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60], // 1 year expiry
+                    },
+                    request.owner_address // This should be signed by owner, but for auto-grant we need a different approach
+                );
+
+                // Note: Since we can't sign on behalf of owner, the owner will need to manually grant access
+                // For now, just show success message and owner will see the paid request
+                toast.success("Payment confirmed! Waiting for dataset owner to grant access on-chain.");
+            } catch (grantError) {
+                console.error("Grant access error:", grantError);
+                toast.info("Payment confirmed! The owner will grant access shortly.");
+            }
+
+            // Reload approved requests
+            await loadApprovedRequests();
+        } catch (error: any) {
+            toast.error(error.message || "Payment failed");
+        } finally {
+            setPayingFor(null);
         }
     };
 
@@ -326,6 +430,54 @@ export default function MarketplacePage() {
                         </Card>
                     )}
 
+                    {/* Approved Requests - Awaiting Payment */}
+                    {connected && approvedRequests.length > 0 && (
+                        <Card className="mb-6 border-2 border-green-500/20 bg-green-500/5">
+                            <CardHeader>
+                                <div className="flex items-center gap-2">
+                                    <DollarSign className="h-5 w-5 text-green-500" />
+                                    <CardTitle>Approved Requests - Pay to Access</CardTitle>
+                                </div>
+                                <CardDescription>
+                                    Your access requests have been approved! Pay 0.1 APT to unlock the data.
+                                </CardDescription>
+                            </CardHeader>
+                            <CardContent>
+                                <div className="space-y-3">
+                                    {approvedRequests.map((request) => (
+                                        <Card key={request.id} className="bg-white/5 border-green-500/20">
+                                            <CardContent className="pt-4">
+                                                <div className="flex justify-between itemscenter gap-4">
+                                                    <div className="space-y-1">
+                                                        <div className="flex items-center gap-2">
+                                                            <Badge variant="secondary">Dataset #{request.dataset_id}</Badge>
+                                                            <Badge className="bg-green-500/20 text-green-600">Approved ✓</Badge>
+                                                        </div>
+                                                        <p className="text-sm text-muted-foreground font-mono">
+                                                            Owner: {truncateAddress(request.owner_address)}
+                                                        </p>
+                                                        <p className="text-sm font-semibold text-green-600">
+                                                            Price: 0.1 APT
+                                                        </p>
+                                                    </div>
+                                                    <Button
+                                                        onClick={() => handlePayForApprovedRequest(request)}
+                                                        disabled={payingFor === `${request.owner_address}-${request.dataset_id}`}
+                                                        className="bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500"
+                                                    >
+                                                        {payingFor === `${request.owner_address}-${request.dataset_id}` 
+                                                            ? "Processing..." 
+                                                            : "Pay 0.1 APT"}
+                                                    </Button>
+                                                </div>
+                                            </CardContent>
+                                        </Card>
+                                    ))}
+                                </div>
+                            </CardContent>
+                        </Card>
+                    )}
+
                     {/* Dataset Grid */}
                     {!loading && filteredDatasets.length > 0 && (
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -385,6 +537,14 @@ export default function MarketplacePage() {
                                                 <Calendar className="h-3 w-3" />
                                                 <span>{formatDate(dataset.created_at)}</span>
                                             </div>
+                                            {!isOwner && (
+                                                <div className="flex items-center gap-2 mt-2">
+                                                    <Badge variant="secondary" className="text-xs">
+                                                        💰 0.1 APT
+                                                    </Badge>
+                                                    <span className="text-xs text-muted-foreground">Access Fee</span>
+                                                </div>
+                                            )}
                                             <div className="flex gap-2 pt-2">
                                                 <Button
                                                     variant="outline"
@@ -408,11 +568,11 @@ export default function MarketplacePage() {
                                                         ) : (
                                                             <Button
                                                                 size="sm"
-                                                                className="flex-1"
+                                                                className="flex-1 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500"
                                                                 onClick={() => handleRequestAccess(dataset)}
                                                                 disabled={requestingAccess}
                                                             >
-                                                                {requestingAccess ? "Requesting..." : "Request Access"}
+                                                                {requestingAccess ? "Processing..." : "Pay & Request (0.1 APT)"}
                                                             </Button>
                                                         )}
                                                     </>
@@ -514,14 +674,14 @@ export default function MarketplacePage() {
                                                 </Button>
                                             ) : (
                                                 <Button
-                                                    className="w-full"
+                                                    className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500"
                                                     onClick={() => {
                                                         handleRequestAccess(selectedDataset);
                                                         setSelectedDataset(null);
                                                     }}
                                                     disabled={requestingAccess}
                                                 >
-                                                    {requestingAccess ? "Requesting Access..." : "Request Access"}
+                                                    {requestingAccess ? "Processing Payment..." : "Pay 0.1 APT & Request Access"}
                                                 </Button>
                                             )}
                                         </>

@@ -120,7 +120,7 @@ export function CSVUpload({ account }: CSVUploadProps) {
             // Build transaction
             const transaction = await buildTransaction(
                 {
-                    moduleAddress: "0x0b133cba97a77b2dee290919e27c72c7d49d8bf5a3294efbd8c40cc38a009eab", // DataX module address
+                    moduleAddress: "0x0b133cba97a77b2dee290919e27c72c7d49d8bf5a3294efbd8c40cc38a009eab", // deta module address
                     moduleName: "data_registry",
                     functionName: "submit_data",
                     args: [hashBytes, metadataBytes],

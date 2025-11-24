@@ -1211,9 +1211,6 @@ func (s *AptosServiceImpl) queryMarketplaceFromGeomiIndexer() ([]interface{}, er
 		return nil, fmt.Errorf("APTOS_INDEXER_API_KEY is required but not set")
 	}
 
-	fmt.Printf("DEBUG: Querying Geomi indexer at: %s\n", config.AppConfig.AptosIndexerURL)
-	fmt.Printf("DEBUG: API key present: %v (length: %d chars)\n", apiKey != "", len(apiKey))
-
 	// Use interface{} for dataset_id since it might be string or number
 	var query struct {
 		DataxMarketplace []struct {

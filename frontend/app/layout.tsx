@@ -8,7 +8,7 @@ import { ThemeProvider } from "@/components/theme-provider";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "DataX - Decentralized Data Network",
+  title: "Deta - Decentralized Data Network",
   description: "A decentralized data network built on Aptos where users have full control",
 };
 

@@ -9,18 +9,12 @@ import { toast } from "sonner";
 import { apiClient } from "@/lib/api";
 import { useWallet } from "@aptos-labs/wallet-adapter-react";
 import { buildTransaction } from "@/lib/aptos-client";
-import { Shield, UserCheck, UserX, Search, Clock, RefreshCw, Key } from "lucide-react";
+import { Shield, UserCheck, UserX, Search, Clock, RefreshCw, Key, DollarSign } from "lucide-react";
 import { motion } from "framer-motion";
+import { getPendingRequests, approveAccessRequest as supabaseApproveRequest, denyAccessRequest, type AccessRequest } from "@/lib/supabase";
 
 interface AccessControlProps {
     account: string;
-}
-
-interface AccessRequest {
-    dataset_id: number;
-    requester: string;
-    message?: string;
-    requested_at?: string;
 }
 
 export function AccessControl({ account }: AccessControlProps) {
@@ -33,14 +27,16 @@ export function AccessControl({ account }: AccessControlProps) {
     const [checkRequester, setCheckRequester] = useState("");
     const [loading, setLoading] = useState(false);
     const [accessResult, setAccessResult] = useState<boolean | null>(null);
-    const [accessRequests, setAccessRequests] = useState<AccessRequest[]>([]);
+    const [pendingRequests, setPendingRequests] = useState<AccessRequest[]>([]);
+    const [paidRequests, setPaidRequests] = useState<AccessRequest[]>([]);
     const [loadingRequests, setLoadingRequests] = useState(false);
 
     const loadAccessRequests = async () => {
         setLoadingRequests(true);
         try {
-            const requests = await apiClient.getAccessRequests(account);
-            setAccessRequests(requests as AccessRequest[]);
+            const requests = await getPendingRequests(account);
+            setPendingRequests(requests.filter(r => r.status === 'pending'));
+            setPaidRequests(requests.filter(r => r.status === 'paid'));
         } catch (error: any) {
             console.error("Failed to load access requests:", error);
         } finally {
@@ -54,6 +50,82 @@ export function AccessControl({ account }: AccessControlProps) {
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [account]);
+
+    const handleApproveRequest = async (request: AccessRequest) => {
+        setLoading(true);
+        try {
+            const success = await supabaseApproveRequest(
+                request.owner_address,
+                request.requester_address,
+                request.dataset_id
+            );
+
+            if (success) {
+                toast.success("Request approved! The requester will be notified to pay 0.1 APT.");
+                await loadAccessRequests();
+            } else {
+                toast.error("Failed to approve request");
+            }
+        } catch (error: any) {
+            toast.error(error.message || "Failed to approve request");
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleDenyRequest = async (request: AccessRequest) => {
+        setLoading(true);
+        try {
+            const success = await denyAccessRequest(
+                request.owner_address,
+                request.requester_address,
+                request.dataset_id
+            );
+
+            if (success) {
+                toast.success("Request denied");
+                await loadAccessRequests();
+            } else {
+                toast.error("Failed to deny request");
+            }
+        } catch (error: any) {
+            toast.error(error.message || "Failed to deny request");
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleGrantAccessForPaidRequest = async (request: AccessRequest) => {
+        if (!signAndSubmitTransaction) {
+            toast.error("Wallet does not support transaction signing");
+            return;
+        }
+
+        setLoading(true);
+        try {
+            const expiresAtTimestamp = Math.floor(Date.now() / 1000) + 365 * 24 * 60 * 60; // 1 year
+
+            const transaction = await buildTransaction(
+                {
+                    moduleAddress: "0x0b133cba97a77b2dee290919e27c72c7d49d8bf5a3294efbd8c40cc38a009eab",
+                    moduleName: "AccessControl",
+                    functionName: "grant_access",
+                    args: [request.dataset_id, request.requester_address, expiresAtTimestamp],
+                },
+                account
+            );
+
+            const response = await signAndSubmitTransaction(transaction);
+            toast.success(`Access granted on-chain! Transaction: ${response.hash}`);
+
+            // Refresh requests
+            await loadAccessRequests();
+        } catch (error: any) {
+            toast.error(error.message || "Failed to grant access");
+        } finally {
+            setLoading(false);
+        }
+    };
 
     const handleGrantAccess = async (reqDatasetId?: number, reqRequester?: string) => {
         const finalDatasetId = reqDatasetId || parseInt(datasetId);
@@ -184,15 +256,15 @@ export function AccessControl({ account }: AccessControlProps) {
                     </div>
                 </CardHeader>
                 <CardContent>
-                    {accessRequests.length === 0 ? (
+                    {pendingRequests.length === 0 ? (
                         <div className="text-center py-8 bg-black/20 rounded-xl border border-white/5 border-dashed">
                             <p className="text-sm text-gray-400">No pending access requests</p>
                         </div>
                     ) : (
                         <div className="space-y-3">
-                            {accessRequests.map((request, idx) => (
+                            {pendingRequests.map((request, idx) => (
                                 <motion.div 
-                                    key={idx}
+                                    key={request.id}
                                     initial={{ opacity: 0, y: 10 }}
                                     animate={{ opacity: 1, y: 0 }}
                                     transition={{ delay: idx * 0.1 }}
@@ -200,31 +272,49 @@ export function AccessControl({ account }: AccessControlProps) {
                                     <Card className="bg-black/20 border-white/5 overflow-hidden">
                                         <CardContent className="pt-4">
                                             <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-                                                <div className="space-y-1">
-                                                    <div className="flex items-center gap-2">
+                                                <div className="space-y-2 flex-1">
+                                                    <div className="flex items-center gap-2 flex-wrap">
                                                         <span className="bg-blue-500/20 text-blue-300 text-xs px-2 py-0.5 rounded-full">
                                                             Dataset #{request.dataset_id}
                                                         </span>
+                                                        <span className="bg-yellow-500/20 text-yellow-300 text-xs px-3 py-1 rounded-full flex items-center gap-1 font-semibold">
+                                                            ⏳ Pending Review
+                                                        </span>
                                                     </div>
                                                     <div className="text-sm text-gray-300 font-mono truncate max-w-xs">
-                                                        <span className="text-gray-500">Requester:</span> {request.requester}
+                                                        <span className="text-gray-500">Requester:</span> {request.requester_address}
                                                     </div>
                                                     {request.message && (
                                                         <div className="text-sm text-gray-400 italic">&quot;{request.message}&quot;</div>
                                                     )}
                                                 </div>
-                                                <Button
-                                                    size="sm"
-                                                    onClick={(e) => {
-                                                        e.preventDefault();
-                                                        handleGrantAccess(request.dataset_id, request.requester);
-                                                    }}
-                                                    disabled={loading}
-                                                    className="bg-green-500/20 text-green-400 hover:bg-green-500/30 border border-green-500/20"
-                                                >
-                                                    <UserCheck className="w-4 h-4 mr-2" />
-                                                    Grant Access
-                                                </Button>
+                                                <div className="flex gap-2">
+                                                    <Button
+                                                        size="sm"
+                                                        variant="outline"
+                                                        onClick={(e) => {
+                                                            e.preventDefault();
+                                                            handleDenyRequest(request);
+                                                        }}
+                                                        disabled={loading}
+                                                        className="bg-red-500/10 text-red-400 hover:bg-red-500/20 border border-red-500/20"
+                                                    >
+                                                        <UserX className="w-4 h-4 mr-2" />
+                                                        Deny
+                                                    </Button>
+                                                    <Button
+                                                        size="sm"
+                                                        onClick={(e) => {
+                                                            e.preventDefault();
+                                                            handleApproveRequest(request);
+                                                        }}
+                                                        disabled={loading}
+                                                        className="bg-green-500/20 text-green-400 hover:bg-green-500/30 border border-green-500/20"
+                                                    >
+                                                        <UserCheck className="w-4 h-4 mr-2" />
+                                                        Approve
+                                                    </Button>
+                                                </div>
                                             </div>
                                         </CardContent>
                                     </Card>
@@ -234,6 +324,82 @@ export function AccessControl({ account }: AccessControlProps) {
                     )}
                 </CardContent>
             </Card>
+
+            {/* Paid Requests - Grant Access On-Chain */}
+            {paidRequests.length > 0 && (
+                <Card className="bg-white/5 backdrop-blur-md border-white/10 border-2 border-green-500/20">
+                    <CardHeader>
+                        <div className="flex justify-between items-center">
+                            <div>
+                                <CardTitle className="flex items-center gap-2">
+                                    <DollarSign className="w-5 h-5 text-green-400" />
+                                    Paid Requests - Grant Access On-Chain
+                                </CardTitle>
+                                <CardDescription>These requesters have paid. Grant them access on-chain.</CardDescription>
+                            </div>
+                            <Button 
+                                onClick={loadAccessRequests} 
+                                disabled={loadingRequests} 
+                                variant="outline" 
+                                size="sm"
+                                className="bg-white/5 border-white/10 hover:bg-white/10"
+                            >
+                                <RefreshCw className={`w-4 h-4 mr-2 ${loadingRequests ? "animate-spin" : ""}`} />
+                                Refresh
+                            </Button>
+                        </div>
+                    </CardHeader>
+                    <CardContent>
+                        <div className="space-y-3">
+                            {paidRequests.map((request, idx) => (
+                                <motion.div 
+                                    key={request.id}
+                                    initial={{ opacity: 0, y: 10 }}
+                                    animate={{ opacity: 1, y: 0 }}
+                                    transition={{ delay: idx * 0.1 }}
+                                >
+                                    <Card className="bg-black/20 border-green-500/20 overflow-hidden">
+                                        <CardContent className="pt-4">
+                                            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                                                <div className="space-y-2 flex-1">
+                                                    <div className="flex items-center gap-2 flex-wrap">
+                                                        <span className="bg-blue-500/20 text-blue-300 text-xs px-2 py-0.5 rounded-full">
+                                                            Dataset #{request.dataset_id}
+                                                        </span>
+                                                        <span className="bg-green-500/20 text-green-300 text-xs px-3 py-1 rounded-full flex items-center gap-1 font-semibold">
+                                                            💰 0.1 APT Paid
+                                                        </span>
+                                                    </div>
+                                                    <div className="text-sm text-gray-300 font-mono truncate max-w-xs">
+                                                        <span className="text-gray-500">Requester:</span> {request.requester_address}
+                                                    </div>
+                                                    {request.payment_tx_hash && (
+                                                        <div className="text-xs text-gray-400 font-mono">
+                                                            Tx: {request.payment_tx_hash.slice(0, 10)}...
+                                                        </div>
+                                                    )}
+                                                </div>
+                                                <Button
+                                                    size="sm"
+                                                    onClick={(e) => {
+                                                        e.preventDefault();
+                                                        handleGrantAccessForPaidRequest(request);
+                                                    }}
+                                                    disabled={loading}
+                                                    className="bg-green-500/20 text-green-400 hover:bg-green-500/30 border border-green-500/20"
+                                                >
+                                                    <UserCheck className="w-4 h-4 mr-2" />
+                                                    Grant Access On-Chain
+                                                </Button>
+                                            </div>
+                                        </CardContent>
+                                    </Card>
+                                </motion.div>
+                            ))}
+                        </div>
+                    </CardContent>
+                </Card>
+            )}
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <Card className="bg-white/5 backdrop-blur-md border-white/10">

@@ -101,3 +101,38 @@ type SubmitCSVRequest struct {
 	Schema         string `json:"schema" binding:"required"`
 	CSVData        string `json:"csv_data" binding:"required"`
 }
+
+// Access request models for escrow payment flow
+type AccessRequest struct {
+	ID               string  `json:"id"`
+	OwnerAddress     string  `json:"owner_address"`
+	RequesterAddress string  `json:"requester_address"`
+	DatasetID        uint64  `json:"dataset_id"`
+	Status           string  `json:"status"` // pending, approved, denied, paid
+	Message          string  `json:"message,omitempty"`
+	PriceAPT         float64 `json:"price_apt"`
+	PaymentTxHash    string  `json:"payment_tx_hash,omitempty"`
+	CreatedAt        string  `json:"created_at,omitempty"`
+	ApprovedAt       string  `json:"approved_at,omitempty"`
+	PaidAt           string  `json:"paid_at,omitempty"`
+}
+
+type CreateAccessRequestInput struct {
+	OwnerAddress     string `json:"owner_address" binding:"required"`
+	RequesterAddress string `json:"requester_address" binding:"required"`
+	DatasetID        uint64 `json:"dataset_id" binding:"required"`
+	Message          string `json:"message"`
+}
+
+type ApproveAccessRequestInput struct {
+	OwnerAddress     string `json:"owner_address" binding:"required"`
+	RequesterAddress string `json:"requester_address" binding:"required"`
+	DatasetID        uint64 `json:"dataset_id" binding:"required"`
+}
+
+type ConfirmPaymentInput struct {
+	OwnerAddress     string `json:"owner_address" binding:"required"`
+	RequesterAddress string `json:"requester_address" binding:"required"`
+	DatasetID        uint64 `json:"dataset_id" binding:"required"`
+	TxHash           string `json:"tx_hash" binding:"required"`
+}

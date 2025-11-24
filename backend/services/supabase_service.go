@@ -383,3 +383,41 @@ func minInt(a, b int) int {
 	}
 	return b
 }
+
+// Access Request Management Methods
+// These methods interact with Supabase database (not S3) for managing access requests
+
+// Note: For database operations, we'll use HTTP requests to Supabase REST API
+// since we're already using S3 client for storage
+
+func (s *SupabaseServiceImpl) CreateAccessRequest(ownerAddress, requesterAddress string, datasetID uint64, message string) error {
+	// For now, return nil - database operations will be implemented via Supabase REST API
+	// This is a placeholder that can be extended with actual Supabase DB client
+	fmt.Printf("DEBUG: CreateAccessRequest called for dataset %d\n", datasetID)
+	return fmt.Errorf("database operations not yet implemented - use Supabase REST API directly")
+}
+
+func (s *SupabaseServiceImpl) GetPendingRequests(ownerAddress string) ([]interface{}, error) {
+	fmt.Printf("DEBUG: GetPendingRequests called for owner %s\n", ownerAddress)
+	return nil, fmt.Errorf("database operations not yet implemented - use Supabase REST API directly")
+}
+
+func (s *SupabaseServiceImpl) ApproveAccessRequest(ownerAddress, requesterAddress string, datasetID uint64) error {
+	fmt.Printf("DEBUG: ApproveAccessRequest called for dataset %d\n", datasetID)
+	return fmt.Errorf("database operations not yet implemented - use Supabase REST API directly")
+}
+
+func (s *SupabaseServiceImpl) DenyAccessRequest(ownerAddress, requesterAddress string, datasetID uint64) error {
+	fmt.Printf("DEBUG: DenyAccessRequest called for dataset %d\n", datasetID)
+	return fmt.Errorf("database operations not yet implemented - use Supabase REST API directly")
+}
+
+func (s *SupabaseServiceImpl) ConfirmPayment(ownerAddress, requesterAddress string, datasetID uint64, txHash string) error {
+	fmt.Printf("DEBUG: ConfirmPayment called for dataset %d, tx: %s\n", datasetID, txHash)
+	return fmt.Errorf("database operations not yet implemented - use Supabase REST API directly")
+}
+
+func (s *SupabaseServiceImpl) GetUserRequests(requesterAddress string) ([]interface{}, error) {
+	fmt.Printf("DEBUG: GetUserRequests called for requester %s\n", requesterAddress)
+	return nil, fmt.Errorf("database operations not yet implemented - use Supabase REST API directly")
+}

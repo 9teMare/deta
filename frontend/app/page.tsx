@@ -37,7 +37,7 @@ export default function Home() {
             // Build transaction to initialize user
             const transaction = await buildTransaction(
                 {
-                    moduleAddress: "0x0b133cba97a77b2dee290919e27c72c7d49d8bf5a3294efbd8c40cc38a009eab", // DataX module address
+                    moduleAddress: "0x0b133cba97a77b2dee290919e27c72c7d49d8bf5a3294efbd8c40cc38a009eab", // deta module address
                     moduleName: "data_registry",
                     functionName: "init",
                     args: [],
@@ -102,7 +102,7 @@ export default function Home() {
                         className="text-center mb-12"
                     >
                         <h1 className="text-6xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 via-purple-500 to-indigo-600 mb-4 tracking-tight">
-                            DataX
+                            Deta
                         </h1>
                         <p className="text-xl text-muted-foreground max-w-2xl mx-auto">
                             Decentralized Data Network on Aptos. Own your data. Control your access. Earn rewards.

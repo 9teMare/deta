@@ -1,6 +1,6 @@
-# DataX Frontend
+# Deta Frontend
 
-A Next.js frontend for the DataX decentralized data network, built with Tailwind CSS and shadcn/ui.
+A Next.js frontend for the Deta decentralized data network, built with Tailwind CSS and shadcn/ui.
 
 ## Features
 
