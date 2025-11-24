@@ -45,9 +45,9 @@ func main() {
 		api.POST("/users/check-initialization", handler.CheckInitialization)
 
 		// Data operations
-		api.POST("/data/submit", handler.SubmitData)
 		api.POST("/data/delete", handler.DeleteDataset)
 		api.POST("/data/get", handler.GetDataset)
+		api.POST("/data/check-hash", handler.CheckDataHash)
 
 		// Access control
 		api.POST("/access/grant", handler.GrantAccess)
@@ -56,6 +56,7 @@ func main() {
 
 		// Vault operations
 		api.POST("/vault/get", handler.GetUserVault)
+		api.POST("/vault/metadata", handler.GetUserDatasetsMetadata)
 
 		// Token operations
 		api.POST("/token/register", handler.RegisterToken)

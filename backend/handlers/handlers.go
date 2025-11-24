@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/datax/backend/models"
@@ -27,93 +26,8 @@ func NewHandler(aptosService services.AptosService, storageService services.Stor
 	}
 }
 
-// csvDataStore stores CSV data by hash for retrieval
-// In production, this would be in a database
-var csvDataStore = make(map[string][][]string)
-var csvDataStoreMutex sync.Mutex
-
-// hashToBlobName maps data hash (SHA-256) to Shelby blob name
-var hashToBlobName = make(map[string]string)
-var hashToBlobNameMutex sync.Mutex
-
-// storeCSVData stores CSV data by hash
-func storeCSVData(hash string, data [][]string) {
-	csvDataStoreMutex.Lock()
-	defer csvDataStoreMutex.Unlock()
-	csvDataStore[hash] = data
-}
-
-// getCSVData retrieves CSV data by hash
-func getCSVData(hash string) ([][]string, bool) {
-	csvDataStoreMutex.Lock()
-	defer csvDataStoreMutex.Unlock()
-	data, exists := csvDataStore[hash]
-	return data, exists
-}
-
-// storeHashToBlobName stores the mapping from data hash to blob name
-func storeHashToBlobName(dataHash string, blobName string) {
-	hashToBlobNameMutex.Lock()
-	defer hashToBlobNameMutex.Unlock()
-
-	// Normalize data hash: remove 0x prefix for consistent storage
-	normalizedHash := strings.TrimPrefix(dataHash, "0x")
-
-	// Store with normalized hash (without 0x)
-	hashToBlobName[normalizedHash] = blobName
-
-	// Also store with 0x prefix for backward compatibility
-	if !strings.HasPrefix(dataHash, "0x") {
-		hashToBlobName["0x"+dataHash] = blobName
-	}
-
-	fmt.Printf("DEBUG: Stored mapping: dataHash=%s (normalized=%s) -> blobName=%s\n", dataHash, normalizedHash, blobName)
-}
-
-// getBlobNameFromHash retrieves the blob name for a given data hash
-func getBlobNameFromHash(dataHash string) (string, bool) {
-	hashToBlobNameMutex.Lock()
-	defer hashToBlobNameMutex.Unlock()
-
-	// Try exact match first
-	blobName, exists := hashToBlobName[dataHash]
-	if exists {
-		return blobName, true
-	}
-
-	// Try without 0x prefix
-	hashWithoutPrefix := strings.TrimPrefix(dataHash, "0x")
-	if hashWithoutPrefix != dataHash {
-		blobName, exists = hashToBlobName[hashWithoutPrefix]
-		if exists {
-			return blobName, true
-		}
-	}
-
-	// Try with 0x prefix
-	hashWithPrefix := "0x" + dataHash
-	if !strings.HasPrefix(dataHash, "0x") {
-		blobName, exists = hashToBlobName[hashWithPrefix]
-		if exists {
-			return blobName, true
-		}
-	}
-
-	// Debug: log all available mappings
-	fmt.Printf("DEBUG: Available mappings count: %d\n", len(hashToBlobName))
-	if len(hashToBlobName) > 0 {
-		fmt.Printf("DEBUG: Sample mappings (first 3):\n")
-		count := 0
-		for k, v := range hashToBlobName {
-			if count < 3 {
-				fmt.Printf("  %s -> %s\n", k, v)
-				count++
-			}
-		}
-	}
-
-	return "", false
-}
+// Note: All in-memory storage has been removed
+// CSV data is stored in Supabase S3, and blob names are discovered via storage service
 
 // InitializeUser - Note: Transactions are now signed on the frontend
 // This endpoint is kept for backward compatibility but returns a message
@@ -140,9 +54,11 @@ func (h *Handler) InitializeUser(c *gin.Context) {
 	})
 }
 
-// SubmitData submits data to the registry
-func (h *Handler) SubmitData(c *gin.Context) {
-	var req models.SubmitDataRequest
+// CheckDataHash checks if a data hash already exists
+func (h *Handler) CheckDataHash(c *gin.Context) {
+	var req struct {
+		DataHash string `json:"data_hash" binding:"required"`
+	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, models.Response{
 			Success: false,
@@ -151,7 +67,7 @@ func (h *Handler) SubmitData(c *gin.Context) {
 		return
 	}
 
-	txHash, err := h.aptosService.SubmitData(req.PrivateKey, req.DataHash, req.Metadata)
+	exists, err := h.aptosService.CheckDataHashExists(req.DataHash)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, models.Response{
 			Success: false,
@@ -162,11 +78,7 @@ func (h *Handler) SubmitData(c *gin.Context) {
 
 	c.JSON(http.StatusOK, models.Response{
 		Success: true,
-		Data: models.TransactionResponse{
-			Hash:    txHash,
-			Success: true,
-			Message: "Data submitted successfully",
-		},
+		Data:    exists,
 	})
 }
 
@@ -360,6 +272,7 @@ func (h *Handler) GetDataset(c *gin.Context) {
 
 	datasetRaw, err := h.aptosService.GetDataset(req.User, req.DatasetID)
 	if err != nil {
+		fmt.Printf("ERROR: GetDataset failed: %v\n", err)
 		c.JSON(http.StatusInternalServerError, models.Response{
 			Success: false,
 			Error:   err.Error(),
@@ -499,17 +412,11 @@ func (h *Handler) RegisterUserForMarketplace(c *gin.Context) {
 		return
 	}
 
-	// Try to discover user from their vault first (checks if they have DataStore)
-	discovered := services.DiscoverUserFromVault(req.UserAddress)
-	if !discovered {
-		// If not discovered, just register them anyway
-		services.RegisterUser(req.UserAddress)
-		fmt.Printf("DEBUG: Manually registered user %s in marketplace registry\n", req.UserAddress)
-	}
-
+	// User discovery is now automatic from the blockchain
+	// No registration needed - users are discovered by querying recent transactions
 	c.JSON(http.StatusOK, models.Response{
 		Success: true,
-		Message: "User registered for marketplace",
+		Message: "User discovery is automatic from the blockchain. No registration needed.",
 	})
 }
 
@@ -562,85 +469,60 @@ func (h *Handler) GetCSVData(c *gin.Context) {
 		return
 	}
 
-	// Try to get CSV data from in-memory store first
-	csvData, exists := getCSVData(req.DataHash)
-	if !exists {
-		// If not found in memory, try to retrieve from Shelby
-		// First, check if we have a blob name mapping for this data hash
-		blobName, hasMapping := getBlobNameFromHash(req.DataHash)
-		if hasMapping {
-			fmt.Printf("DEBUG: Found blob name mapping: dataHash=%s -> blobName=%s\n", req.DataHash, blobName)
-			var err error
-			csvData, err = h.storageService.RetrieveCSV(req.Owner, blobName)
-			if err != nil {
-				fmt.Printf("ERROR: Failed to retrieve from Shelby with blob name %s: %v\n", blobName, err)
-				c.JSON(http.StatusNotFound, models.Response{
-					Success: false,
-					Error:   fmt.Sprintf("CSV data not found on Shelby: %v", err),
-				})
-				return
-			}
-			fmt.Printf("DEBUG: Successfully retrieved CSV from Shelby using blob name: %s\n", blobName)
-		} else {
-			// If no mapping exists, try using the data hash directly (in case it's already a blob name)
-			// This handles legacy cases where blob name was stored as the data hash
-			// Also try if blob name contains "/" (Supabase format: {account}/{timestamp}_{hash}.csv)
-			if strings.HasPrefix(req.DataHash, "csv_") || strings.Contains(req.DataHash, "/") {
-				fmt.Printf("DEBUG: Data hash looks like a blob name, trying direct retrieval: %s\n", req.DataHash)
-				var err error
-				csvData, err = h.storageService.RetrieveCSV(req.Owner, req.DataHash)
+	// Retrieve CSV data directly from storage service
+	// Try using the data hash directly first (in case it's already a blob name)
+	// Also try if blob name contains "/" (Supabase format: {account}/{timestamp}_{hash}.csv)
+	var csvData [][]string
+	var err error
+
+	if strings.HasPrefix(req.DataHash, "csv_") || strings.Contains(req.DataHash, "/") {
+		fmt.Printf("DEBUG: Data hash looks like a blob name, trying direct retrieval: %s\n", req.DataHash)
+		csvData, err = h.storageService.RetrieveCSV(req.Owner, req.DataHash)
+		if err != nil {
+			fmt.Printf("DEBUG: Direct retrieval failed, trying to find blob by pattern: %v\n", err)
+		}
+	} else {
+		// Try direct retrieval first
+		csvData, err = h.storageService.RetrieveCSV(req.Owner, req.DataHash)
+		if err != nil {
+			fmt.Printf("DEBUG: Direct retrieval failed, trying to find blob by pattern: %v\n", err)
+		}
+	}
+
+	// If direct retrieval failed, try to find blob by listing S3 objects
+	if err != nil {
+		fmt.Printf("DEBUG: Attempting to find blob by listing S3 objects for owner: %s\n", req.Owner)
+		if supabaseService, ok := h.storageService.(interface {
+			FindBlobByPattern(accountAddress string, pattern string) (string, error)
+		}); ok {
+			// Try with empty pattern to list all objects for this owner and get the most recent CSV
+			blobName, findErr := supabaseService.FindBlobByPattern(req.Owner, "")
+			if findErr == nil {
+				fmt.Printf("DEBUG: Found blob by listing: %s\n", blobName)
+				csvData, err = h.storageService.RetrieveCSV(req.Owner, blobName)
 				if err != nil {
-					fmt.Printf("ERROR: Failed to retrieve from storage with direct hash: %v\n", err)
+					fmt.Printf("ERROR: Failed to retrieve after listing: %v\n", err)
 					c.JSON(http.StatusNotFound, models.Response{
 						Success: false,
 						Error:   fmt.Sprintf("CSV data not found in storage: %v", err),
 					})
 					return
 				}
-				fmt.Printf("DEBUG: Successfully retrieved CSV from storage using direct hash: %s\n", req.DataHash)
+				fmt.Printf("DEBUG: Successfully retrieved CSV from storage: %s\n", blobName)
 			} else {
-				fmt.Printf("ERROR: No CSV data found in memory and no blob name mapping for data hash: %s\n", req.DataHash)
-				fmt.Printf("DEBUG: Attempting to find blob by listing S3 objects for owner: %s\n", req.Owner)
-
-				// Last resort: try to list objects in S3 bucket and find matching blob
-				// The blob name format is: {owner}/{timestamp}_{hash}.csv
-				// Since we don't have the mapping, we'll list all objects for this owner
-				// and try to retrieve the most recent CSV file
-				if supabaseService, ok := h.storageService.(interface {
-					FindBlobByPattern(accountAddress string, pattern string) (string, error)
-				}); ok {
-					// Try with empty pattern to list all objects for this owner and get the most recent CSV
-					blobName, err := supabaseService.FindBlobByPattern(req.Owner, "")
-					if err == nil {
-						fmt.Printf("DEBUG: Found blob by listing: %s\n", blobName)
-						csvData, err = h.storageService.RetrieveCSV(req.Owner, blobName)
-						if err != nil {
-							fmt.Printf("ERROR: Failed to retrieve after listing: %v\n", err)
-							c.JSON(http.StatusNotFound, models.Response{
-								Success: false,
-								Error:   fmt.Sprintf("CSV data not found in storage: %v", err),
-							})
-							return
-						}
-						// Store the mapping for future use
-						storeHashToBlobName(req.DataHash, blobName)
-						fmt.Printf("DEBUG: Successfully retrieved CSV and stored mapping: %s -> %s\n", req.DataHash, blobName)
-					} else {
-						fmt.Printf("ERROR: Listing objects failed: %v\n", err)
-						c.JSON(http.StatusNotFound, models.Response{
-							Success: false,
-							Error:   fmt.Sprintf("CSV data not found. Data hash: %s. The mapping was lost (backend may have restarted). Error: %v", req.DataHash, err),
-						})
-						return
-					}
-				} else {
-					c.JSON(http.StatusNotFound, models.Response{
-						Success: false,
-						Error:   fmt.Sprintf("CSV data not found. Data hash: %s. The file may not have been stored, or the mapping is missing.", req.DataHash),
-					})
-					return
-				}
+				fmt.Printf("ERROR: Listing objects failed: %v\n", findErr)
+				c.JSON(http.StatusNotFound, models.Response{
+					Success: false,
+					Error:   fmt.Sprintf("CSV data not found. Data hash: %s. Error: %v", req.DataHash, findErr),
+				})
+				return
 			}
+		} else {
+			c.JSON(http.StatusNotFound, models.Response{
+				Success: false,
+				Error:   fmt.Sprintf("CSV data not found. Data hash: %s. The file may not have been stored.", req.DataHash),
+			})
+			return
 		}
 	}
 
@@ -676,6 +558,32 @@ func (h *Handler) GetUserVault(c *gin.Context) {
 			Datasets: datasets,
 			Count:    uint64(len(datasets)),
 		},
+	})
+}
+
+// GetUserDatasetsMetadata retrieves minimal metadata for all user datasets (optimized for batch operations)
+func (h *Handler) GetUserDatasetsMetadata(c *gin.Context) {
+	var req models.GetUserVaultRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, models.Response{
+			Success: false,
+			Error:   err.Error(),
+		})
+		return
+	}
+
+	metadata, err := h.aptosService.GetUserDatasetsMetadata(req.User)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, models.Response{
+			Success: false,
+			Error:   err.Error(),
+		})
+		return
+	}
+
+	c.JSON(http.StatusOK, models.Response{
+		Success: true,
+		Data:    metadata,
 	})
 }
 
@@ -823,24 +731,19 @@ func (h *Handler) SubmitCSV(c *gin.Context) {
 		return
 	}
 
-	// Register user in marketplace registry (important for marketplace discovery)
-	services.RegisterUser(accountAddress)
-	fmt.Printf("DEBUG: Registered user %s in marketplace registry\n", accountAddress)
+	fmt.Printf("DEBUG: CSV submitted for user %s\n", accountAddress)
 
-	// Store CSV data on Shelby
+	// Store CSV data in Supabase S3
 	blobName, err := h.storageService.StoreCSV(accountAddress, csvData)
 	if err != nil {
-		fmt.Printf("WARNING: Failed to store CSV on Shelby: %v, falling back to in-memory storage\n", err)
-		// Fallback to in-memory storage
-		storeCSVData(dataHash, csvData)
-	} else {
-		fmt.Printf("DEBUG: Stored CSV data on Shelby with blob name: %s for account: %s\n", blobName, accountAddress)
-		// Store mapping from data hash (SHA-256) to blob name
-		storeHashToBlobName(dataHash, blobName)
-		// Also store in-memory with both keys for backward compatibility
-		storeCSVData(blobName, csvData)
-		storeCSVData(dataHash, csvData)
+		fmt.Printf("ERROR: Failed to store CSV in Supabase S3: %v\n", err)
+		c.JSON(http.StatusInternalServerError, models.Response{
+			Success: false,
+			Error:   fmt.Sprintf("Failed to store CSV data: %v", err),
+		})
+		return
 	}
+	fmt.Printf("DEBUG: Stored CSV data in Supabase S3 with blob name: %s for account: %s\n", blobName, accountAddress)
 
 	c.JSON(http.StatusOK, models.Response{
 		Success: true,

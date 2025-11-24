@@ -13,6 +13,9 @@ import { apiClient } from "@/lib/api";
 import { buildTransaction } from "@/lib/aptos-client";
 import { useState, useEffect } from "react";
 import Link from "next/link";
+import { AnimatedBackground } from "@/components/ui/animated-background";
+import { motion } from "framer-motion";
+import { Database, Shield, Lock, LayoutDashboard, ArrowRight } from "lucide-react";
 
 export default function Home() {
     const { account, connected, signAndSubmitTransaction } = useWallet();
@@ -34,7 +37,7 @@ export default function Home() {
             // Build transaction to initialize user
             const transaction = await buildTransaction(
                 {
-                    moduleAddress: "0x0b133cba97a77b2dee290919e27c72c7d49d8bf5a3294efbd8c40cc38a009eab", // DataX module address
+                    moduleAddress: "0x0b133cba97a77b2dee290919e27c72c7d49d8bf5a3294efbd8c40cc38a009eab", // deta module address
                     moduleName: "data_registry",
                     functionName: "init",
                     args: [],
@@ -43,36 +46,9 @@ export default function Home() {
             );
 
             console.log("Built transaction:", transaction);
-            console.log("Transaction type:", typeof transaction);
-            console.log("Transaction keys:", transaction ? Object.keys(transaction) : "undefined");
-            console.log("Transaction.function:", transaction?.function);
-            console.log("Transaction.data:", transaction?.data);
-            console.log("signAndSubmitTransaction type:", typeof signAndSubmitTransaction);
-            console.log("Full transaction object:", JSON.stringify(transaction, null, 2));
-
-            if (!transaction) {
-                throw new Error("Transaction is undefined");
-            }
 
             // Sign and submit transaction
-            // The wallet adapter expects InputTransactionData format
-            // Try wrapping in 'data' if the direct format doesn't work
-            if (!signAndSubmitTransaction) {
-                throw new Error("signAndSubmitTransaction is not available");
-            }
-
-            // Try the transaction directly first
-            // If that fails, the wallet adapter might need it wrapped differently
-            let response;
-            try {
-                response = await signAndSubmitTransaction(transaction);
-            } catch (error: any) {
-                // If direct format fails, try wrapping in 'data' property
-                console.log("Direct format failed, trying with 'data' wrapper");
-                response = await signAndSubmitTransaction({
-                    data: transaction,
-                } as any);
-            }
+            const response = await signAndSubmitTransaction(transaction);
 
             toast.success(`User initialized! Transaction: ${response.hash}`);
 
@@ -113,56 +89,70 @@ export default function Home() {
     const accountAddress = account?.address.toString() || "";
 
     return (
-        <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-900 dark:to-gray-800">
-            <div className="container mx-auto px-4 py-8">
+        <div className="min-h-screen relative">
+            <AnimatedBackground />
+            
+            <div className="container mx-auto px-4 py-12 relative z-10">
                 <div className="max-w-6xl mx-auto">
                     {/* Header */}
-                    <div className="text-center mb-8">
-                        <h1 className="text-4xl font-bold text-gray-900 dark:text-white mb-2">DataX</h1>
-                        <p className="text-lg text-gray-600 dark:text-gray-300">Decentralized Data Network on Aptos</p>
-                        <p className="text-sm text-gray-500 dark:text-gray-400 mt-2">Own your data. Control your access. Earn rewards.</p>
-                    </div>
+                    <motion.div 
+                        initial={{ opacity: 0, y: -20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ duration: 0.5 }}
+                        className="text-center mb-12"
+                    >
+                        <h1 className="text-6xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 via-purple-500 to-indigo-600 mb-4 tracking-tight">
+                            Deta
+                        </h1>
+                        <p className="text-xl text-muted-foreground max-w-2xl mx-auto">
+                            Decentralized Data Network on Aptos. Own your data. Control your access. Earn rewards.
+                        </p>
+                    </motion.div>
 
                     {/* Wallet Connection */}
-                    <div className="mb-6">
+                    <motion.div 
+                        initial={{ opacity: 0, scale: 0.9 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        transition={{ duration: 0.5, delay: 0.2 }}
+                        className="mb-10 flex justify-center"
+                    >
                         <WalletConnect />
-                    </div>
+                    </motion.div>
 
                     {connected && account && (
-                        <>
+                        <motion.div
+                            initial={{ opacity: 0, y: 20 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ duration: 0.5, delay: 0.4 }}
+                        >
                             {/* Initialize User */}
                             {checkingInit ? (
-                                <Card className="mb-6">
+                                <Card className="mb-8 border-white/10 bg-white/5 backdrop-blur-lg">
                                     <CardContent className="pt-6">
                                         <p className="text-center text-muted-foreground">Checking initialization status...</p>
                                     </CardContent>
                                 </Card>
                             ) : isInitialized ? (
-                                <Card className="mb-6">
+                                <Card className="mb-8 border-green-500/20 bg-green-500/5 backdrop-blur-lg">
                                     <CardHeader>
-                                        <CardTitle>Account Status</CardTitle>
+                                        <CardTitle className="flex items-center gap-2">
+                                            <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+                                            Account Status
+                                        </CardTitle>
                                         <CardDescription>Your account is initialized and ready to use</CardDescription>
                                     </CardHeader>
-                                    <CardContent>
-                                        <div className="flex items-center gap-2 text-green-600 dark:text-green-400">
-                                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                                            </svg>
-                                            <span className="font-medium">Account Initialized</span>
-                                        </div>
-                                    </CardContent>
                                 </Card>
                             ) : (
-                                <Card className="mb-6">
+                                <Card className="mb-8 border-yellow-500/20 bg-yellow-500/5 backdrop-blur-lg">
                                     <CardHeader>
                                         <CardTitle>Initialize Account</CardTitle>
                                         <CardDescription>Initialize your data store and vault (one-time setup)</CardDescription>
                                     </CardHeader>
                                     <CardContent>
-                                        <Button onClick={handleInitialize} className="w-full">
+                                        <Button onClick={handleInitialize} className="w-full bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-600 hover:to-orange-600 text-white border-0">
                                             Initialize User Account
                                         </Button>
-                                        <p className="text-xs text-muted-foreground mt-2">
+                                        <p className="text-xs text-muted-foreground mt-2 text-center">
                                             This will create your DataStore and Vault resources on-chain
                                         </p>
                                     </CardContent>
@@ -170,39 +160,76 @@ export default function Home() {
                             )}
 
                             {/* Main Tabs */}
-                            <Tabs defaultValue="data" className="space-y-4">
-                                <div className="flex justify-between items-center">
-                                    <TabsList className="grid w-full grid-cols-3">
-                                        <TabsTrigger value="data">Data Operations</TabsTrigger>
-                                        <TabsTrigger value="access">Access Control</TabsTrigger>
-                                        <TabsTrigger value="vault">My Vault</TabsTrigger>
+                            <Tabs defaultValue="data" className="space-y-8">
+                                <div className="flex flex-col md:flex-row justify-between items-center gap-4">
+                                    <TabsList className="grid w-full md:w-auto grid-cols-3 bg-white/5 backdrop-blur-md border border-white/10 p-1 h-auto rounded-xl">
+                                        <TabsTrigger value="data" className="data-[state=active]:bg-primary/20 data-[state=active]:text-primary py-3">
+                                            <Database className="w-4 h-4 mr-2" />
+                                            Data Operations
+                                        </TabsTrigger>
+                                        <TabsTrigger value="access" className="data-[state=active]:bg-primary/20 data-[state=active]:text-primary py-3">
+                                            <Shield className="w-4 h-4 mr-2" />
+                                            Access Control
+                                        </TabsTrigger>
+                                        <TabsTrigger value="vault" className="data-[state=active]:bg-primary/20 data-[state=active]:text-primary py-3">
+                                            <Lock className="w-4 h-4 mr-2" />
+                                            My Vault
+                                        </TabsTrigger>
                                     </TabsList>
-                                    <Link href="/marketplace" className="ml-4">
-                                        <Button variant="outline">Marketplace</Button>
+                                    <Link href="/marketplace">
+                                        <Button variant="outline" className="w-full md:w-auto bg-white/5 backdrop-blur-md border-white/10 hover:bg-white/10">
+                                            <LayoutDashboard className="w-4 h-4 mr-2" />
+                                            Marketplace
+                                            <ArrowRight className="w-4 h-4 ml-2" />
+                                        </Button>
                                     </Link>
                                 </div>
 
-                                <TabsContent value="data" className="space-y-4">
+                                <TabsContent value="data" className="space-y-4 focus-visible:outline-none focus-visible:ring-0">
                                     <DataOperations account={accountAddress} />
                                 </TabsContent>
 
-                                <TabsContent value="access" className="space-y-4">
+                                <TabsContent value="access" className="space-y-4 focus-visible:outline-none focus-visible:ring-0">
                                     <AccessControl account={accountAddress} />
                                 </TabsContent>
 
-                                <TabsContent value="vault" className="space-y-4">
+                                <TabsContent value="vault" className="space-y-4 focus-visible:outline-none focus-visible:ring-0">
                                     <VaultView account={accountAddress} />
                                 </TabsContent>
                             </Tabs>
-                        </>
+                        </motion.div>
                     )}
 
                     {!connected && (
-                        <Card>
-                            <CardContent className="pt-6">
-                                <p className="text-center text-muted-foreground">Connect your wallet to get started</p>
-                            </CardContent>
-                        </Card>
+                        <motion.div
+                            initial={{ opacity: 0, y: 20 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ duration: 0.5, delay: 0.4 }}
+                        >
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mt-12">
+                                <Card className="bg-white/5 backdrop-blur-sm border-white/10 hover:bg-white/10 transition-colors">
+                                    <CardHeader>
+                                        <Database className="w-10 h-10 text-blue-400 mb-2" />
+                                        <CardTitle>Secure Storage</CardTitle>
+                                        <CardDescription>Store your data hashes on the Aptos blockchain with full immutability.</CardDescription>
+                                    </CardHeader>
+                                </Card>
+                                <Card className="bg-white/5 backdrop-blur-sm border-white/10 hover:bg-white/10 transition-colors">
+                                    <CardHeader>
+                                        <Shield className="w-10 h-10 text-purple-400 mb-2" />
+                                        <CardTitle>Access Control</CardTitle>
+                                        <CardDescription>Granular control over who can access your data and for how long.</CardDescription>
+                                    </CardHeader>
+                                </Card>
+                                <Card className="bg-white/5 backdrop-blur-sm border-white/10 hover:bg-white/10 transition-colors">
+                                    <CardHeader>
+                                        <LayoutDashboard className="w-10 h-10 text-indigo-400 mb-2" />
+                                        <CardTitle>Data Marketplace</CardTitle>
+                                        <CardDescription>Monetize your datasets by listing them on the decentralized marketplace.</CardDescription>
+                                    </CardHeader>
+                                </Card>
+                            </div>
+                        </motion.div>
                     )}
                 </div>
             </div>

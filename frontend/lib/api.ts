@@ -57,14 +57,6 @@ class ApiClient {
         return response.json();
     }
 
-    async initializeUser(accountAddress: string): Promise<TransactionResponse> {
-        const response = await this.request<TransactionResponse>("/api/v1/users/initialize", {
-            method: "POST",
-            body: JSON.stringify({ account_address: accountAddress }),
-        });
-        return response.data!;
-    }
-
     async checkInitialization(userAddress: string): Promise<{ initialized: boolean }> {
         const response = await this.request<{ initialized: boolean }>("/api/v1/users/check-initialization", {
             method: "POST",
@@ -94,29 +86,6 @@ class ApiClient {
         return result.data!;
     }
 
-    async submitData(privateKey: string, dataHash: string, metadata: string): Promise<TransactionResponse> {
-        const response = await this.request<TransactionResponse>("/api/v1/data/submit", {
-            method: "POST",
-            body: JSON.stringify({
-                private_key: privateKey,
-                data_hash: dataHash,
-                metadata: metadata,
-            }),
-        });
-        return response.data!;
-    }
-
-    async deleteDataset(privateKey: string, datasetId: number): Promise<TransactionResponse> {
-        const response = await this.request<TransactionResponse>("/api/v1/data/delete", {
-            method: "POST",
-            body: JSON.stringify({
-                private_key: privateKey,
-                dataset_id: datasetId,
-            }),
-        });
-        return response.data!;
-    }
-
     async getDataset(user: string, datasetId: number): Promise<DatasetInfo> {
         // Ensure datasetId is a valid number
         const numericId = typeof datasetId === "string" ? parseInt(datasetId, 10) : Number(datasetId);
@@ -134,31 +103,6 @@ class ApiClient {
         const response = await this.request<DatasetInfo>("/api/v1/data/get", {
             method: "POST",
             body: JSON.stringify(requestBody),
-        });
-        return response.data!;
-    }
-
-    async grantAccess(privateKey: string, datasetId: number, requester: string, expiresAt: number): Promise<TransactionResponse> {
-        const response = await this.request<TransactionResponse>("/api/v1/access/grant", {
-            method: "POST",
-            body: JSON.stringify({
-                private_key: privateKey,
-                dataset_id: datasetId,
-                requester: requester,
-                expires_at: expiresAt,
-            }),
-        });
-        return response.data!;
-    }
-
-    async revokeAccess(privateKey: string, datasetId: number, requester: string): Promise<TransactionResponse> {
-        const response = await this.request<TransactionResponse>("/api/v1/access/revoke", {
-            method: "POST",
-            body: JSON.stringify({
-                private_key: privateKey,
-                dataset_id: datasetId,
-                requester: requester,
-            }),
         });
         return response.data!;
     }
@@ -185,24 +129,14 @@ class ApiClient {
         return response.data!;
     }
 
-    async registerToken(privateKey: string): Promise<TransactionResponse> {
-        const response = await this.request<TransactionResponse>("/api/v1/token/register", {
-            method: "POST",
-            body: JSON.stringify({ private_key: privateKey }),
-        });
-        return response.data!;
-    }
-
-    async mintToken(privateKey: string, recipient: string, amount: number): Promise<TransactionResponse> {
-        const response = await this.request<TransactionResponse>("/api/v1/token/mint", {
+    async getUserDatasetsMetadata(user: string): Promise<Array<{ id: number; metadata: string; is_active: boolean }>> {
+        const response = await this.request<Array<{ id: number; metadata: string; is_active: boolean }>>("/api/v1/vault/metadata", {
             method: "POST",
             body: JSON.stringify({
-                private_key: privateKey,
-                recipient: recipient,
-                amount: amount,
+                user: user,
             }),
         });
-        return response.data!;
+        return response.data || [];
     }
 
     async getMarketplaceDatasets(): Promise<any[]> {
@@ -232,6 +166,22 @@ class ApiClient {
         });
     }
 
+    async checkDataHash(dataHash: string): Promise<boolean> {
+        try {
+            const response = await fetch(`${API_BASE_URL}/api/v1/data/check-hash`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ data_hash: dataHash }),
+            });
+            const result = await response.json();
+            if (!result.success) throw new Error(result.error);
+            return result.data;
+        } catch (error) {
+            console.error("Failed to check data hash:", error);
+            return false; // Assume not exists on error to allow submission attempt (or handle differently)
+        }
+    }
+
     async getCSVData(dataHash: string, owner: string, datasetId: number, requester: string): Promise<string[][]> {
         const response = await this.request<string[][]>("/api/v1/data/get-csv", {
             method: "POST",
@@ -243,15 +193,6 @@ class ApiClient {
             }),
         });
         return response.data || [];
-    }
-
-    async registerUserForMarketplace(userAddress: string): Promise<void> {
-        await this.request("/api/v1/marketplace/register-user", {
-            method: "POST",
-            body: JSON.stringify({
-                user_address: userAddress,
-            }),
-        });
     }
 }
 

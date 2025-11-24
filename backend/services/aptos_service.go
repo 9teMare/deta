@@ -14,7 +14,9 @@ type AptosService interface {
 	GetDataset(userAddress string, datasetID uint64) (interface{}, error)
 	CheckAccess(owner string, datasetID uint64, requester string) (bool, error)
 	GetUserVault(userAddress string) ([]uint64, error)
+	GetUserDatasetsMetadata(userAddress string) ([]interface{}, error) // Returns minimal metadata (id, metadata, is_active) for all datasets
 	IsAccountInitialized(userAddress string) (bool, error)
 	GetMarketplaceDatasets() ([]interface{}, error)
 	GetAccessRequests(ownerAddress string) ([]interface{}, error)
+	CheckDataHashExists(dataHash string) (bool, error)
 }
